@@ -1,11 +1,11 @@
-use std::{marker::PhantomData, str::FromStr, sync::Arc, task::Poll};
+use std::{marker::PhantomData, str::FromStr, sync::Arc, task::Poll, ops::ControlFlow};
 
 use dashmap::DashMap;
-use futures::Stream;
-use lapin::BasicProperties;
+use futures::{Stream, StreamExt};
+use lapin::{BasicProperties, options::BasicConsumeOptions};
 use pin_project::{pin_project, pinned_drop};
 use serde::{Deserialize, Serialize};
-use tokio::{sync::mpsc, task};
+use tokio::{sync::mpsc, task::{self, JoinHandle}};
 use uuid::Uuid;
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -68,19 +68,85 @@ pub struct Channel {
 
 impl Channel {
     pub async fn new(connection: &Connection, exchange: String) -> Result<Channel> {
-        let chan = connection.inner.create_channel().await?;
-        chan.exchange_declare(
-            exchange.as_ref(),
-            lapin::ExchangeKind::Topic,
-            Default::default(),
-            Default::default(),
-        )
-        .await?;
+        fn forward_reply_blocking(
+            pending_replies: Arc<DashMap<Uuid, mpsc::UnboundedSender<lapin::message::Delivery>>>,
+            msg: lapin::message::Delivery,
+            msg_id: Uuid,
+        ) -> ControlFlow<(), lapin::message::Delivery> {
+            if let Some(tx) = pending_replies.get(&msg_id) {
+                match tx.send(msg) {
+                    Ok(()) => ControlFlow::Break(()),
+                    Err(tokio::sync::mpsc::error::SendError(e)) => ControlFlow::Continue(e),
+                }
+            } else {
+                ControlFlow::Break(())
+            }
+        }
 
+
+        let chan = connection.inner.create_channel().await?;
+        if exchange != "" {
+            chan.exchange_declare(
+                exchange.as_ref(),
+                lapin::ExchangeKind::Topic,
+                Default::default(),
+                Default::default(),
+            )
+            .await?;
+        }
         let pending_replies = DashMap::new();
         let pending_replies = Arc::new(pending_replies);
 
-        todo!("setup reply forwarding task");
+        let reply_consumer = chan
+            .basic_consume(
+                "amq.rabbitmq.reply-to",
+                &Uuid::new_v4().to_string(),
+                BasicConsumeOptions {
+                    // Consuming the direct reply-to queue works only in no-ack mode.
+                    // See https://www.rabbitmq.com/direct-reply-to.html#usage
+                    no_ack: true,
+                    ..Default::default()
+                },
+                Default::default(),
+            )
+            .await?;
+
+            let handle_replies: JoinHandle<Result<()>> = task::spawn({
+                let mut reply_consumer = reply_consumer;
+                let pending_replies = pending_replies.clone();
+                async move {
+                    while let Some(msg_res) = reply_consumer.next().await {
+                        match msg_res {
+                            Ok(msg) => {
+                                // Spawn a task that attempts to forward the reply `msg` that just came in
+                                let forward_reply: JoinHandle<()> = task::spawn({
+                                    let pending_replies = pending_replies.clone();
+                                    async move {
+                                        let Some(msg_id) = delivery_uuid(&msg) else {
+                                            todo!("report abcense of uuid");
+                                        };
+                                        let msg_id = match msg_id {
+                                            Ok(i) => i,
+                                            Err(_) => todo!("report error"),
+                                        };
+                                        let mut msg = Some(msg);
+                                        loop {
+                                          todo!()
+                                        }
+                                    }
+                                });
+                                // `forward_reply` should run to completion
+                                drop(forward_reply);
+                            }
+                            Err(e) => error!("Error receiving reply message: {e:?}"),
+                        }
+                    }
+                    panic!("Task handle_replies ended");
+                }
+            });
+            // `handle_replies` should run forever
+            drop(handle_replies);
+    
 
         Ok(Channel {
             inner: chan,
@@ -143,10 +209,7 @@ where
     }
 
     pub fn get_uuid(&self) -> Option<Result<Uuid>> {
-        let Some(correlation_id) = self.inner.properties.correlation_id() else {
-            return None;
-        };
-        Some(Uuid::from_str(correlation_id.as_str()).map_err(Into::into))
+        delivery_uuid(&self.inner)
     }
 
     pub async fn reply(&self, reply_payload: &R, publisher: &Publisher<B>) -> Result<()> {
@@ -302,6 +365,14 @@ impl<T> PinnedDrop for ReplyReceiver<T> {
         task::spawn_blocking(move || chan.remove_pending_reply(&correlation_uuid));
     }
 }
+
+fn delivery_uuid(delivery: &lapin::message::Delivery) -> Option<Result<Uuid>> {
+    let Some(correlation_id) = delivery.properties.correlation_id() else {
+        return None;
+    };
+    Some(Uuid::from_str(correlation_id.as_str()).map_err(Into::into))
+}
+
 #[cfg(test)]
 mod tests {
     const RABBIT_MQ_URL: &str = "amqp://tg:secret@localhost:5672";
