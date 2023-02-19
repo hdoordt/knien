@@ -160,8 +160,8 @@ where
 
         let correlation_uuid = correlation_uuid?;
 
-        todo!("publish reply")
-        
+        todo!("publish reply");
+
         Ok(())
     }
 }
@@ -270,7 +270,7 @@ where
 }
 
 #[pin_project(PinnedDrop)]
-struct ReplyReceiver<T> {
+pub struct ReplyReceiver<T> {
     #[pin]
     correlation_uuid: Uuid,
     #[pin]
@@ -296,12 +296,10 @@ impl<'d, T: Deserialize<'d> + Serialize> Stream for ReplyReceiver<T> {
 #[pinned_drop]
 impl<T> PinnedDrop for ReplyReceiver<T> {
     fn drop(self: std::pin::Pin<&mut Self>) {
-        task::spawn_blocking({
-            let chan = self.chan.take().unwrap();
-            let correlation_uuid = self.correlation_uuid;
-
-            move || chan.remove_pending_reply(&correlation_uuid)
-        });
+        let mut this = self.project();
+        let chan = this.chan.take().unwrap();
+        let correlation_uuid = this.correlation_uuid.clone();
+        task::spawn_blocking(move || chan.remove_pending_reply(&correlation_uuid));
     }
 }
 #[cfg(test)]
