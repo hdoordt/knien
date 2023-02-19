@@ -15,6 +15,7 @@ pub enum Error {
     Mq(lapin::Error),
     Serde(serde_json::Error),
     Uuid(uuid::Error),
+    Reply(ReplyError),
 }
 
 impl From<lapin::Error> for Error {
@@ -33,6 +34,12 @@ impl From<uuid::Error> for Error {
     fn from(e: uuid::Error) -> Self {
         Self::Uuid(e)
     }
+}
+
+#[derive(Debug)]
+pub enum ReplyError {
+    NoCorrelationUuid,
+    NoReplyToConfigured,
 }
 
 pub trait Bus {
@@ -72,6 +79,8 @@ impl Channel {
 
         let pending_replies = DashMap::new();
         let pending_replies = Arc::new(pending_replies);
+
+        todo!("setup reply forwarding task");
 
         Ok(Channel {
             inner: chan,
@@ -140,8 +149,20 @@ where
         Some(Uuid::from_str(correlation_id.as_str()).map_err(Into::into))
     }
 
-    pub async fn reply(&self, reply_payload: &R, chan: &Publisher<B>) -> Result<()> {
-        todo!();
+    pub async fn reply(&self, reply_payload: &R, publisher: &Publisher<B>) -> Result<()> {
+        let Some(correlation_uuid) = self.get_uuid() else {
+            return Err(Error::Reply(ReplyError::NoCorrelationUuid));
+        };
+
+        let Some(reply_to) = self.inner.properties.reply_to().as_ref().map(|r | r.as_str()) else {
+            return Err(Error::Reply(ReplyError::NoReplyToConfigured))
+        };
+
+        let correlation_uuid = correlation_uuid?;
+
+        todo!("publish reply")
+        
+        Ok(())
     }
 }
 
