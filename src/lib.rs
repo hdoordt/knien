@@ -323,7 +323,7 @@ where
     R: Deserialize<'r> + Serialize,
     B: Bus<PublishPayload = P, ReplyPayload = R>,
 {
-    pub async fn publish_recv_many(&self, payload: &P) -> Result<ReplyReceiver<R>> {
+    pub async fn publish_recv_many(&self, payload: &P) -> Result<impl Stream<Item = Delivery<R>>> {
         let correlation_uuid = Uuid::new_v4();
         let (tx, rx) = mpsc::unbounded_channel();
 
@@ -353,7 +353,7 @@ where
 }
 
 #[pin_project(PinnedDrop)]
-pub struct ReplyReceiver<T> {
+struct ReplyReceiver<T> {
     #[pin]
     correlation_uuid: Uuid,
     #[pin]
