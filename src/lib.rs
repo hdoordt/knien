@@ -1,7 +1,7 @@
-use std::{fmt::Debug, marker::PhantomData, ops::ControlFlow, str::FromStr, sync::Arc, task::Poll};
+use std::{fmt::Debug, marker::PhantomData, str::FromStr, sync::Arc, task::Poll};
 
 use dashmap::DashMap;
-use futures::{Stream, StreamExt};
+use futures::{Future, Stream, StreamExt};
 use lapin::{
     options::{BasicAckOptions, BasicConsumeOptions},
     BasicProperties,
@@ -74,21 +74,6 @@ pub struct Channel {
 
 impl Channel {
     pub async fn new(connection: &Connection, exchange: String) -> Result<Channel> {
-        fn forward_reply_blocking(
-            pending_replies: Arc<DashMap<Uuid, mpsc::UnboundedSender<lapin::message::Delivery>>>,
-            msg: lapin::message::Delivery,
-            msg_id: Uuid,
-        ) -> ControlFlow<(), lapin::message::Delivery> {
-            if let Some(tx) = pending_replies.get(&msg_id) {
-                match tx.send(msg) {
-                    Ok(()) => ControlFlow::Break(()),
-                    Err(tokio::sync::mpsc::error::SendError(e)) => ControlFlow::Continue(e),
-                }
-            } else {
-                ControlFlow::Break(())
-            }
-        }
-
         let chan = connection.inner.create_channel().await?;
         if exchange != "" {
             chan.exchange_declare(
@@ -125,6 +110,7 @@ impl Channel {
                     match msg_res {
                         Ok(msg) => {
                             // Spawn a task that attempts to forward the reply `msg` that just came in
+                            // Getting a lock to pending_replies may block
                             let forward_reply: JoinHandle<()> = task::spawn_blocking({
                                 let pending_replies = pending_replies.clone();
                                 move || {
@@ -331,10 +317,10 @@ where
     }
 }
 
-impl<'p, B, P, R> Publisher<B>
+impl<'r, 'p, B, P, R> Publisher<B>
 where
     P: Deserialize<'p> + Serialize,
-    R: Deserialize<'p> + Serialize,
+    R: Deserialize<'r> + Serialize,
     B: Bus<PublishPayload = P, ReplyPayload = R>,
 {
     pub async fn publish_recv_many(&self, payload: &P) -> Result<ReplyReceiver<R>> {
@@ -355,6 +341,14 @@ where
         self.publish_with_properties(payload, properties, correlation_uuid)
             .await?;
         Ok(rx)
+    }
+
+    pub async fn publish_recv_one(
+        &'r self,
+        payload: &P,
+    ) -> Result<impl Future<Output = Option<Delivery<R>>>> {
+        let rx = self.publish_recv_many(payload).await?;
+        Ok(async { rx.take(1).next().await })
     }
 }
 
@@ -433,7 +427,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn it_works() -> Result<(), crate::Error> {
+    async fn publish_recv_many() -> Result<(), crate::Error> {
         let connection = Connection::connect(RABBIT_MQ_URL).await.unwrap();
         let uuid = Uuid::new_v4();
         tokio::task::spawn({
@@ -441,12 +435,14 @@ mod tests {
             let mut consumer: Consumer<FrameBus> = channel.consumer("consumer").await?;
             async move {
                 let msg = consumer.next().await.unwrap().unwrap();
-                msg.ack(true).await.unwrap();
+                msg.ack(false).await.unwrap();
                 let payload = msg.get_payload().unwrap();
                 assert_eq!(payload.message, uuid.to_string());
-                msg.reply(&Err(FrameSendError::ClientDisconnected), &channel)
-                    .await
-                    .unwrap();
+                for _ in 0..3 {
+                    msg.reply(&Err(FrameSendError::ClientDisconnected), &channel)
+                        .await
+                        .unwrap();
+                }
             }
         });
 
@@ -460,7 +456,42 @@ mod tests {
             .await
             .unwrap();
 
-        timeout(Duration::from_secs(1), rx.next()).await.unwrap();
+        for _ in 0..3 {
+            timeout(Duration::from_secs(1), rx.next()).await.unwrap();
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn publish_recv_one() -> Result<(), crate::Error> {
+        let connection = Connection::connect(RABBIT_MQ_URL).await.unwrap();
+        let uuid = Uuid::new_v4();
+        tokio::task::spawn({
+            let channel = Channel::new(&connection, "".to_owned()).await.unwrap();
+            let mut consumer: Consumer<FrameBus> = channel.consumer("consumer").await?;
+            async move {
+                let msg = consumer.next().await.unwrap().unwrap();
+                msg.ack(false).await.unwrap();
+                let payload = msg.get_payload().unwrap();
+                assert_eq!(payload.message, uuid.to_string());
+                msg.reply(&Err(FrameSendError::ClientDisconnected), &channel)
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let channel = Channel::new(&connection, "".to_owned()).await.unwrap();
+        let publisher: Publisher<FrameBus> = channel.publisher();
+
+        let fut = publisher
+            .publish_recv_one(&FramePayload {
+                message: uuid.to_string(),
+            })
+            .await
+            .unwrap();
+
+        timeout(Duration::from_secs(1), fut).await.unwrap();
 
         Ok(())
     }
