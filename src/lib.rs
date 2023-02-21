@@ -1,11 +1,17 @@
-use std::{marker::PhantomData, str::FromStr, sync::Arc, task::Poll, ops::ControlFlow};
+use std::{fmt::Debug, marker::PhantomData, ops::ControlFlow, str::FromStr, sync::Arc, task::Poll};
 
 use dashmap::DashMap;
 use futures::{Stream, StreamExt};
-use lapin::{BasicProperties, options::BasicConsumeOptions};
+use lapin::{
+    options::{BasicAckOptions, BasicConsumeOptions},
+    BasicProperties,
+};
 use pin_project::{pin_project, pinned_drop};
 use serde::{Deserialize, Serialize};
-use tokio::{sync::mpsc, task::{self, JoinHandle}};
+use tokio::{
+    sync::mpsc,
+    task::{self, JoinHandle},
+};
 use uuid::Uuid;
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -83,7 +89,6 @@ impl Channel {
             }
         }
 
-
         let chan = connection.inner.create_channel().await?;
         if exchange != "" {
             chan.exchange_declare(
@@ -94,7 +99,8 @@ impl Channel {
             )
             .await?;
         }
-        let pending_replies = DashMap::new();
+        let pending_replies: DashMap<Uuid, mpsc::UnboundedSender<lapin::message::Delivery>> =
+            DashMap::new();
         let pending_replies = Arc::new(pending_replies);
 
         let reply_consumer = chan
@@ -111,42 +117,43 @@ impl Channel {
             )
             .await?;
 
-            let handle_replies: JoinHandle<Result<()>> = task::spawn({
-                let mut reply_consumer = reply_consumer;
-                let pending_replies = pending_replies.clone();
-                async move {
-                    while let Some(msg_res) = reply_consumer.next().await {
-                        match msg_res {
-                            Ok(msg) => {
-                                // Spawn a task that attempts to forward the reply `msg` that just came in
-                                let forward_reply: JoinHandle<()> = task::spawn({
-                                    let pending_replies = pending_replies.clone();
-                                    async move {
-                                        let Some(msg_id) = delivery_uuid(&msg) else {
+        let handle_replies: JoinHandle<Result<()>> = task::spawn({
+            let mut reply_consumer = reply_consumer;
+            let pending_replies = pending_replies.clone();
+            async move {
+                while let Some(msg_res) = reply_consumer.next().await {
+                    match msg_res {
+                        Ok(msg) => {
+                            // Spawn a task that attempts to forward the reply `msg` that just came in
+                            let forward_reply: JoinHandle<()> = task::spawn_blocking({
+                                let pending_replies = pending_replies.clone();
+                                move || {
+                                    let Some(msg_id) = delivery_uuid(&msg) else {
                                             todo!("report abcense of uuid");
                                         };
-                                        let msg_id = match msg_id {
-                                            Ok(i) => i,
-                                            Err(_) => todo!("report error"),
-                                        };
-                                        let mut msg = Some(msg);
-                                        loop {
-                                          todo!()
-                                        }
-                                    }
-                                });
-                                // `forward_reply` should run to completion
-                                drop(forward_reply);
-                            }
-                            Err(e) => error!("Error receiving reply message: {e:?}"),
+                                    let msg_id = match msg_id {
+                                        Ok(i) => i,
+                                        Err(_) => todo!("report error"),
+                                    };
+
+                                    if let Some(tx) = pending_replies.get(&msg_id) {
+                                        tx.send(msg).unwrap();
+                                    } else {
+                                        todo!("Report absence of sender");
+                                    };
+                                }
+                            });
+                            // `forward_reply` should run to completion
+                            drop(forward_reply);
                         }
+                        Err(e) => eprintln!("Error receiving reply message: {e:?}"),
                     }
-                    panic!("Task handle_replies ended");
                 }
-            });
-            // `handle_replies` should run forever
-            drop(handle_replies);
-    
+                panic!("Task handle_replies ended");
+            }
+        });
+        // `handle_replies` should run forever
+        drop(handle_replies);
 
         Ok(Channel {
             inner: chan,
@@ -155,7 +162,32 @@ impl Channel {
         })
     }
 
+    async fn publish_with_properties(
+        &self,
+        bytes: &[u8],
+        routing_key: &str,
+        properties: BasicProperties,
+        correlation_uuid: Uuid,
+    ) -> Result<()> {
+        let properties = properties.with_correlation_id(correlation_uuid.to_string().into());
+
+        self.inner
+            .basic_publish(
+                self.exchange.as_ref(),
+                routing_key,
+                Default::default(),
+                &bytes,
+                properties,
+            )
+            .await?;
+
+        Ok(())
+    }
+
     pub async fn consumer<B: Bus>(&self, consumer_tag: &str) -> Result<Consumer<B>> {
+        self.inner
+            .queue_declare(B::QUEUE, Default::default(), Default::default())
+            .await?;
         let consumer = self
             .inner
             .basic_consume(
@@ -193,6 +225,7 @@ impl Channel {
     }
 }
 
+#[derive(Debug)]
 pub struct Delivery<B> {
     inner: lapin::message::Delivery,
     _marker: PhantomData<B>,
@@ -200,7 +233,7 @@ pub struct Delivery<B> {
 
 impl<'p, 'r, B, P, R> Delivery<B>
 where
-    P: Deserialize<'p> + Serialize,
+    P: Deserialize<'p> + Serialize + Debug,
     R: Deserialize<'r> + Serialize,
     B: Bus<PublishPayload = P, ReplyPayload = R>,
 {
@@ -212,19 +245,23 @@ where
         delivery_uuid(&self.inner)
     }
 
-    pub async fn reply(&self, reply_payload: &R, publisher: &Publisher<B>) -> Result<()> {
+    pub async fn reply(&'p self, reply_payload: &R, chan: &Channel) -> Result<()> {
         let Some(correlation_uuid) = self.get_uuid() else {
             return Err(Error::Reply(ReplyError::NoCorrelationUuid));
         };
-
         let Some(reply_to) = self.inner.properties.reply_to().as_ref().map(|r | r.as_str()) else {
             return Err(Error::Reply(ReplyError::NoReplyToConfigured))
         };
 
         let correlation_uuid = correlation_uuid?;
 
-        todo!("publish reply");
+        let bytes = serde_json::to_vec(reply_payload)?;
+        chan.publish_with_properties(&bytes, reply_to, Default::default(), correlation_uuid)
+            .await
+    }
 
+    pub async fn ack(&self, multiple: bool) -> Result<()> {
+        self.inner.ack(BasicAckOptions { multiple }).await?;
         Ok(())
     }
 }
@@ -288,20 +325,9 @@ where
         correlation_uuid: Uuid,
     ) -> Result<()> {
         let bytes = serde_json::to_vec(payload)?;
-        let properties = properties.with_correlation_id(correlation_uuid.to_string().into());
-
         self.chan
-            .inner
-            .basic_publish(
-                self.chan.exchange.as_ref(),
-                B::QUEUE,
-                Default::default(),
-                &bytes,
-                properties,
-            )
-            .await?;
-
-        Ok(())
+            .publish_with_properties(&bytes, B::QUEUE, properties, correlation_uuid)
+            .await
     }
 }
 
@@ -376,8 +402,12 @@ fn delivery_uuid(delivery: &lapin::message::Delivery) -> Option<Result<Uuid>> {
 #[cfg(test)]
 mod tests {
     const RABBIT_MQ_URL: &str = "amqp://tg:secret@localhost:5672";
+    use std::time::Duration;
+
     use futures::StreamExt;
     use serde::{Deserialize, Serialize};
+    use tokio::time::timeout;
+    use uuid::Uuid;
 
     use crate::{Bus, Channel, Connection, Consumer, Publisher};
 
@@ -405,16 +435,16 @@ mod tests {
     #[tokio::test]
     async fn it_works() -> Result<(), crate::Error> {
         let connection = Connection::connect(RABBIT_MQ_URL).await.unwrap();
-
+        let uuid = Uuid::new_v4();
         tokio::task::spawn({
             let channel = Channel::new(&connection, "".to_owned()).await.unwrap();
             let mut consumer: Consumer<FrameBus> = channel.consumer("consumer").await?;
-            let publisher: Publisher<FrameBus> = channel.publisher();
             async move {
                 let msg = consumer.next().await.unwrap().unwrap();
+                msg.ack(true).await.unwrap();
                 let payload = msg.get_payload().unwrap();
-                dbg!(payload);
-                msg.reply(&Err(FrameSendError::ClientDisconnected), &publisher)
+                assert_eq!(payload.message, uuid.to_string());
+                msg.reply(&Err(FrameSendError::ClientDisconnected), &channel)
                     .await
                     .unwrap();
             }
@@ -423,12 +453,14 @@ mod tests {
         let channel = Channel::new(&connection, "".to_owned()).await.unwrap();
         let publisher: Publisher<FrameBus> = channel.publisher();
 
-        publisher
-            .publish(&FramePayload {
-                message: "hello, world!".to_owned(),
+        let mut rx = publisher
+            .publish_recv_many(&FramePayload {
+                message: uuid.to_string(),
             })
             .await
             .unwrap();
+
+        timeout(Duration::from_secs(1), rx.next()).await.unwrap();
 
         Ok(())
     }
