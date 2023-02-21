@@ -23,7 +23,7 @@ pub struct Channel {
 impl Channel {
     pub async fn new(connection: &Connection, exchange: String) -> Result<Channel> {
         let chan = connection.inner.create_channel().await?;
-        if exchange != "" {
+        if !exchange.is_empty() {
             chan.exchange_declare(
                 exchange.as_ref(),
                 lapin::ExchangeKind::Topic,
@@ -110,7 +110,7 @@ impl Channel {
                 self.exchange.as_ref(),
                 routing_key,
                 Default::default(),
-                &bytes,
+                bytes,
                 properties,
             )
             .await?;
@@ -279,7 +279,7 @@ impl<T> PinnedDrop for ReplyReceiver<T> {
     fn drop(self: std::pin::Pin<&mut Self>) {
         let mut this = self.project();
         let chan = this.chan.take().unwrap();
-        let correlation_uuid = this.correlation_uuid.clone();
+        let correlation_uuid = *this.correlation_uuid;
         task::spawn_blocking(move || chan.remove_pending_reply(&correlation_uuid));
     }
 }
