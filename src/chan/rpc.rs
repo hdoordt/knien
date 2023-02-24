@@ -1,38 +1,35 @@
-use std::{marker::PhantomData, sync::Arc};
+use std::{marker::PhantomData, sync::Arc, task::Poll};
 
 use async_trait::async_trait;
 use dashmap::DashMap;
-use futures::StreamExt;
+use futures::{StreamExt, Stream, Future};
 use lapin::{options::BasicConsumeOptions, BasicProperties};
+use pin_project::{pin_project, pinned_drop};
+use serde::{Deserialize, Serialize};
 use tokio::{
     sync::mpsc,
     task::{self, JoinHandle},
 };
 use uuid::Uuid;
 
-use crate::{delivery_uuid, Bus, Connection, Result};
+use crate::{delivery_uuid, Connection, Result, Delivery};
 
-use super::{Channel, Consumer, Publisher};
+use super::{Channel, Consumer, Publisher, direct::DirectBus};
+
+pub trait RpcBus: DirectBus {
+    type ReplyPayload;
+}
 
 #[derive(Clone)]
 pub struct RpcChannel {
     inner: lapin::Channel,
     pending_replies: Arc<DashMap<Uuid, mpsc::UnboundedSender<lapin::message::Delivery>>>,
-    exchange: String,
 }
 
 impl RpcChannel {
-    pub async fn new(connection: &Connection, exchange: String) -> Result<RpcChannel> {
+    pub async fn new(connection: &Connection) -> Result<RpcChannel> {
         let chan = connection.inner.create_channel().await?;
-        if !exchange.is_empty() {
-            chan.exchange_declare(
-                exchange.as_ref(),
-                lapin::ExchangeKind::Topic,
-                Default::default(),
-                Default::default(),
-            )
-            .await?;
-        }
+
         let pending_replies: DashMap<Uuid, mpsc::UnboundedSender<lapin::message::Delivery>> =
             DashMap::new();
         let pending_replies = Arc::new(pending_replies);
@@ -93,33 +90,22 @@ impl RpcChannel {
         Ok(RpcChannel {
             inner: chan,
             pending_replies,
-            exchange,
         })
     }
 
-    pub(crate) async fn publish_with_properties(
+    pub(crate) fn register_pending_reply(
         &self,
-        bytes: &[u8],
-        routing_key: &str,
-        properties: BasicProperties,
         correlation_uuid: Uuid,
-    ) -> Result<()> {
-        let properties = properties.with_correlation_id(correlation_uuid.to_string().into());
-
-        self.inner
-            .basic_publish(
-                self.exchange.as_ref(),
-                routing_key,
-                Default::default(),
-                bytes,
-                properties,
-            )
-            .await?;
-
-        Ok(())
+        tx: mpsc::UnboundedSender<lapin::message::Delivery>,
+    ) {
+        self.pending_replies.insert(correlation_uuid, tx);
     }
 
-    pub async fn consumer<B: Bus>(&self, consumer_tag: &str) -> Result<Consumer<Self, B>> {
+    pub(crate) fn remove_pending_reply(&self, correlation_uuid: &Uuid) {
+        self.pending_replies.remove(correlation_uuid);
+    }
+
+    pub async fn consumer<B: RpcBus>(&self, consumer_tag: &str) -> Result<Consumer<Self, B>> {
         self.inner
             .queue_declare(B::QUEUE, Default::default(), Default::default())
             .await?;
@@ -140,23 +126,11 @@ impl RpcChannel {
         })
     }
 
-    pub fn publisher<B>(&self) -> Publisher<Self, B> {
+    pub fn publisher<B: RpcBus>(&self) -> Publisher<Self, B> {
         Publisher {
             chan: self.clone(),
             _marker: PhantomData,
         }
-    }
-
-    pub(crate) fn register_pending_reply(
-        &self,
-        correlation_uuid: Uuid,
-        tx: mpsc::UnboundedSender<lapin::message::Delivery>,
-    ) {
-        self.pending_replies.insert(correlation_uuid, tx);
-    }
-
-    pub(crate) fn remove_pending_reply(&self, correlation_uuid: &Uuid) {
-        self.pending_replies.remove(correlation_uuid);
     }
 }
 
@@ -166,22 +140,85 @@ impl Channel for RpcChannel {
         &self,
         bytes: &[u8],
         routing_key: &str,
-        properties: BasicProperties,
+        properties: lapin::BasicProperties,
         correlation_uuid: Uuid,
     ) -> Result<()> {
         let properties = properties.with_correlation_id(correlation_uuid.to_string().into());
 
         self.inner
-            .basic_publish(
-                self.exchange.as_ref(),
-                routing_key,
-                Default::default(),
-                bytes,
-                properties,
-            )
+            .basic_publish("", routing_key, Default::default(), bytes, properties)
             .await?;
 
         Ok(())
     }
+}
 
+impl<'r, 'p, B, P, R> Publisher<RpcChannel, B>
+where
+    P: Deserialize<'p> + Serialize,
+    R: Deserialize<'r> + Serialize,
+    B: RpcBus<PublishPayload = P, ReplyPayload = R>,
+{
+    pub async fn publish_recv_many(&self, payload: &P) -> Result<impl Stream<Item = Delivery<R>>> {
+        let correlation_uuid = Uuid::new_v4();
+        let (tx, rx) = mpsc::unbounded_channel();
+
+        let rx = ReplyReceiver {
+            correlation_uuid,
+            inner: rx,
+            chan: Some(self.chan.clone()),
+            _marker: PhantomData,
+        };
+
+        self.chan.register_pending_reply(correlation_uuid, tx);
+
+        let properties = BasicProperties::default().with_reply_to("amq.rabbitmq.reply-to".into());
+
+        self.publish_with_properties(B::QUEUE, payload, properties, correlation_uuid)
+            .await?;
+        Ok(rx)
+    }
+
+    pub async fn publish_recv_one(
+        &'r self,
+        payload: &P,
+    ) -> Result<impl Future<Output = Option<Delivery<R>>>> {
+        let rx = self.publish_recv_many(payload).await?;
+        Ok(async { rx.take(1).next().await })
+    }
+}
+
+
+#[pin_project(PinnedDrop)]
+struct ReplyReceiver<T> {
+    #[pin]
+    correlation_uuid: Uuid,
+    #[pin]
+    inner: mpsc::UnboundedReceiver<lapin::message::Delivery>,
+    #[pin]
+    chan: Option<RpcChannel>,
+    _marker: PhantomData<T>,
+}
+
+impl<'d, T: Deserialize<'d> + Serialize> Stream for ReplyReceiver<T> {
+    type Item = Delivery<T>;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+        // Map `lapin::message::Delivery` items to `self::Delivery` items
+        this.inner.poll_recv(cx).map(|msg| msg.map(|m| m.into()))
+    }
+}
+
+#[pinned_drop]
+impl<T> PinnedDrop for ReplyReceiver<T> {
+    fn drop(self: std::pin::Pin<&mut Self>) {
+        let mut this = self.project();
+        let chan = this.chan.take().unwrap();
+        let correlation_uuid = *this.correlation_uuid;
+        task::spawn_blocking(move || chan.remove_pending_reply(&correlation_uuid));
+    }
 }

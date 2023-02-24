@@ -1,6 +1,9 @@
 use std::{fmt::Debug, marker::PhantomData, str::FromStr};
 
-use chan::rpc::RpcChannel;
+use chan::{
+    rpc::{RpcBus, RpcChannel},
+    Channel,
+};
 
 use error::{Error, ReplyError};
 use lapin::options::BasicAckOptions;
@@ -14,9 +17,7 @@ pub mod error;
 pub type Result<T> = std::result::Result<T, Error>;
 
 pub trait Bus {
-    const QUEUE: &'static str;
     type PublishPayload;
-    type ReplyPayload;
 }
 
 pub struct Connection {
@@ -36,11 +37,10 @@ pub struct Delivery<B> {
     _marker: PhantomData<B>,
 }
 
-impl<'p, 'r, B, P, R> Delivery<B>
+impl<'p, 'r, B, P> Delivery<B>
 where
-    P: Deserialize<'p> + Serialize + Debug,
-    R: Deserialize<'r> + Serialize,
-    B: Bus<PublishPayload = P, ReplyPayload = R>,
+    P: Deserialize<'p> + Serialize,
+    B: Bus<PublishPayload = P>,
 {
     pub fn get_payload(&'p self) -> Result<P> {
         Ok(serde_json::from_slice(&self.inner.data)?)
@@ -50,6 +50,18 @@ where
         delivery_uuid(&self.inner)
     }
 
+    pub async fn ack(&self, multiple: bool) -> Result<()> {
+        self.inner.ack(BasicAckOptions { multiple }).await?;
+        Ok(())
+    }
+}
+
+impl<'p, 'r, B, P, R> Delivery<B>
+where
+    P: Deserialize<'p> + Serialize + Debug,
+    R: Deserialize<'r> + Serialize,
+    B: RpcBus<PublishPayload = P, ReplyPayload = R>,
+{
     pub async fn reply(&'p self, reply_payload: &R, chan: &RpcChannel) -> Result<()> {
         let Some(correlation_uuid) = self.get_uuid() else {
             return Err(Error::Reply(ReplyError::NoCorrelationUuid));
@@ -61,13 +73,9 @@ where
         let correlation_uuid = correlation_uuid?;
 
         let bytes = serde_json::to_vec(reply_payload)?;
+
         chan.publish_with_properties(&bytes, reply_to, Default::default(), correlation_uuid)
             .await
-    }
-
-    pub async fn ack(&self, multiple: bool) -> Result<()> {
-        self.inner.ack(BasicAckOptions { multiple }).await?;
-        Ok(())
     }
 }
 
@@ -98,7 +106,11 @@ mod tests {
     use uuid::Uuid;
 
     use crate::{
-        chan::{rpc::RpcChannel, Consumer, Publisher},
+        chan::{
+            direct::DirectBus,
+            rpc::{RpcBus, RpcChannel},
+            Consumer, Publisher,
+        },
         Bus, Connection,
     };
 
@@ -116,10 +128,14 @@ mod tests {
     struct FrameBus;
 
     impl Bus for FrameBus {
-        const QUEUE: &'static str = "frame";
-
         type PublishPayload = FramePayload;
+    }
 
+    impl DirectBus for FrameBus {
+        const QUEUE: &'static str = "frame";
+    }
+
+    impl RpcBus for FrameBus {
         type ReplyPayload = Result<(), FrameSendError>;
     }
 
@@ -128,7 +144,7 @@ mod tests {
         let connection = Connection::connect(RABBIT_MQ_URL).await.unwrap();
         let uuid = Uuid::new_v4();
         tokio::task::spawn({
-            let channel = RpcChannel::new(&connection, "".to_owned()).await.unwrap();
+            let channel = RpcChannel::new(&connection).await.unwrap();
             let mut consumer: Consumer<_, FrameBus> = channel.consumer("consumer").await?;
             async move {
                 let msg = consumer.next().await.unwrap().unwrap();
@@ -143,7 +159,7 @@ mod tests {
             }
         });
 
-        let channel = RpcChannel::new(&connection, "".to_owned()).await.unwrap();
+        let channel = RpcChannel::new(&connection).await.unwrap();
         let publisher: Publisher<_, FrameBus> = channel.publisher();
 
         let mut rx = publisher
@@ -165,7 +181,7 @@ mod tests {
         let connection = Connection::connect(RABBIT_MQ_URL).await.unwrap();
         let uuid = Uuid::new_v4();
         tokio::task::spawn({
-            let channel = RpcChannel::new(&connection, "".to_owned()).await.unwrap();
+            let channel = RpcChannel::new(&connection).await.unwrap();
             let mut consumer: Consumer<_, FrameBus> = channel.consumer("consumer").await?;
             async move {
                 let msg = consumer.next().await.unwrap().unwrap();
@@ -178,7 +194,7 @@ mod tests {
             }
         });
 
-        let channel = RpcChannel::new(&connection, "".to_owned()).await.unwrap();
+        let channel = RpcChannel::new(&connection).await.unwrap();
         let publisher: Publisher<_, FrameBus> = channel.publisher();
 
         let fut = publisher
