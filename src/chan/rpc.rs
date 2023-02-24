@@ -1,27 +1,28 @@
-use std::{marker::PhantomData, sync::Arc, task::Poll};
+use std::{marker::PhantomData, sync::Arc};
 
+use async_trait::async_trait;
 use dashmap::DashMap;
-use futures::{Future, Stream, StreamExt};
+use futures::StreamExt;
 use lapin::{options::BasicConsumeOptions, BasicProperties};
-use pin_project::{pin_project, pinned_drop};
-use serde::{Deserialize, Serialize};
 use tokio::{
     sync::mpsc,
     task::{self, JoinHandle},
 };
 use uuid::Uuid;
 
-use crate::{delivery_uuid, Bus, Connection, Delivery, Result};
+use crate::{delivery_uuid, Bus, Connection, Result};
+
+use super::{Channel, Consumer, Publisher};
 
 #[derive(Clone)]
-pub struct Channel {
+pub struct RpcChannel {
     inner: lapin::Channel,
     pending_replies: Arc<DashMap<Uuid, mpsc::UnboundedSender<lapin::message::Delivery>>>,
     exchange: String,
 }
 
-impl Channel {
-    pub async fn new(connection: &Connection, exchange: String) -> Result<Channel> {
+impl RpcChannel {
+    pub async fn new(connection: &Connection, exchange: String) -> Result<RpcChannel> {
         let chan = connection.inner.create_channel().await?;
         if !exchange.is_empty() {
             chan.exchange_declare(
@@ -89,7 +90,7 @@ impl Channel {
         // `handle_replies` should run forever
         drop(handle_replies);
 
-        Ok(Channel {
+        Ok(RpcChannel {
             inner: chan,
             pending_replies,
             exchange,
@@ -118,7 +119,7 @@ impl Channel {
         Ok(())
     }
 
-    pub async fn consumer<B: Bus>(&self, consumer_tag: &str) -> Result<Consumer<B>> {
+    pub async fn consumer<B: Bus>(&self, consumer_tag: &str) -> Result<Consumer<Self, B>> {
         self.inner
             .queue_declare(B::QUEUE, Default::default(), Default::default())
             .await?;
@@ -139,7 +140,7 @@ impl Channel {
         })
     }
 
-    pub fn publisher<B>(&self) -> Publisher<B> {
+    pub fn publisher<B>(&self) -> Publisher<Self, B> {
         Publisher {
             chan: self.clone(),
             _marker: PhantomData,
@@ -159,127 +160,28 @@ impl Channel {
     }
 }
 
-#[pin_project]
-pub struct Consumer<B> {
-    chan: Channel,
-    #[pin]
-    inner: lapin::Consumer,
-    _marker: PhantomData<B>,
-}
-
-impl<'p, B, P> Stream for Consumer<B>
-where
-    P: Deserialize<'p> + Serialize,
-    B: Bus<PublishPayload = P>,
-{
-    type Item = Result<Delivery<B>>;
-
-    fn poll_next(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        let this = self.project();
-        // Adapt any `LapinDelivery`s to `Delivery<T>`
-        this.inner
-            .poll_next(cx)
-            .map(|m| m.map(|m| m.map(Into::into).map_err(Into::into)))
-    }
-}
-
-pub struct Publisher<B> {
-    chan: Channel,
-    _marker: PhantomData<B>,
-}
-
-impl<'p, B, P> Publisher<B>
-where
-    P: Deserialize<'p> + Serialize,
-    B: Bus<PublishPayload = P>,
-{
-    pub async fn publish(&self, payload: &P) -> Result<()> {
-        let correlation_uuid = Uuid::new_v4();
-        self.publish_with_properties(payload, BasicProperties::default(), correlation_uuid)
-            .await
-    }
-
+#[async_trait]
+impl Channel for RpcChannel {
     async fn publish_with_properties(
         &self,
-        payload: &P,
+        bytes: &[u8],
+        routing_key: &str,
         properties: BasicProperties,
         correlation_uuid: Uuid,
     ) -> Result<()> {
-        let bytes = serde_json::to_vec(payload)?;
-        self.chan
-            .publish_with_properties(&bytes, B::QUEUE, properties, correlation_uuid)
-            .await
-    }
-}
+        let properties = properties.with_correlation_id(correlation_uuid.to_string().into());
 
-impl<'r, 'p, B, P, R> Publisher<B>
-where
-    P: Deserialize<'p> + Serialize,
-    R: Deserialize<'r> + Serialize,
-    B: Bus<PublishPayload = P, ReplyPayload = R>,
-{
-    pub async fn publish_recv_many(&self, payload: &P) -> Result<impl Stream<Item = Delivery<R>>> {
-        let correlation_uuid = Uuid::new_v4();
-        let (tx, rx) = mpsc::unbounded_channel();
-
-        let rx = ReplyReceiver {
-            correlation_uuid,
-            inner: rx,
-            chan: Some(self.chan.clone()),
-            _marker: PhantomData,
-        };
-
-        self.chan.register_pending_reply(correlation_uuid, tx);
-
-        let properties = BasicProperties::default().with_reply_to("amq.rabbitmq.reply-to".into());
-
-        self.publish_with_properties(payload, properties, correlation_uuid)
+        self.inner
+            .basic_publish(
+                self.exchange.as_ref(),
+                routing_key,
+                Default::default(),
+                bytes,
+                properties,
+            )
             .await?;
-        Ok(rx)
+
+        Ok(())
     }
 
-    pub async fn publish_recv_one(
-        &'r self,
-        payload: &P,
-    ) -> Result<impl Future<Output = Option<Delivery<R>>>> {
-        let rx = self.publish_recv_many(payload).await?;
-        Ok(async { rx.take(1).next().await })
-    }
-}
-
-#[pin_project(PinnedDrop)]
-struct ReplyReceiver<T> {
-    #[pin]
-    correlation_uuid: Uuid,
-    #[pin]
-    inner: mpsc::UnboundedReceiver<lapin::message::Delivery>,
-    #[pin]
-    chan: Option<Channel>,
-    _marker: PhantomData<T>,
-}
-
-impl<'d, T: Deserialize<'d> + Serialize> Stream for ReplyReceiver<T> {
-    type Item = Delivery<T>;
-
-    fn poll_next(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
-        let mut this = self.project();
-        // Map `lapin::message::Delivery` items to `self::Delivery` items
-        this.inner.poll_recv(cx).map(|msg| msg.map(|m| m.into()))
-    }
-}
-
-#[pinned_drop]
-impl<T> PinnedDrop for ReplyReceiver<T> {
-    fn drop(self: std::pin::Pin<&mut Self>) {
-        let mut this = self.project();
-        let chan = this.chan.take().unwrap();
-        let correlation_uuid = *this.correlation_uuid;
-        task::spawn_blocking(move || chan.remove_pending_reply(&correlation_uuid));
-    }
 }

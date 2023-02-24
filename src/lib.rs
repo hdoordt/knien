@@ -1,6 +1,6 @@
 use std::{fmt::Debug, marker::PhantomData, str::FromStr};
 
-use chan::Channel;
+use chan::rpc::RpcChannel;
 
 use error::{Error, ReplyError};
 use lapin::options::BasicAckOptions;
@@ -50,7 +50,7 @@ where
         delivery_uuid(&self.inner)
     }
 
-    pub async fn reply(&'p self, reply_payload: &R, chan: &Channel) -> Result<()> {
+    pub async fn reply(&'p self, reply_payload: &R, chan: &RpcChannel) -> Result<()> {
         let Some(correlation_uuid) = self.get_uuid() else {
             return Err(Error::Reply(ReplyError::NoCorrelationUuid));
         };
@@ -98,8 +98,8 @@ mod tests {
     use uuid::Uuid;
 
     use crate::{
-        chan::{Consumer, Publisher},
-        Bus, Channel, Connection,
+        chan::{rpc::RpcChannel, Consumer, Publisher},
+        Bus, Connection,
     };
 
     #[derive(Debug, Serialize, Deserialize)]
@@ -128,8 +128,8 @@ mod tests {
         let connection = Connection::connect(RABBIT_MQ_URL).await.unwrap();
         let uuid = Uuid::new_v4();
         tokio::task::spawn({
-            let channel = Channel::new(&connection, "".to_owned()).await.unwrap();
-            let mut consumer: Consumer<FrameBus> = channel.consumer("consumer").await?;
+            let channel = RpcChannel::new(&connection, "".to_owned()).await.unwrap();
+            let mut consumer: Consumer<_, FrameBus> = channel.consumer("consumer").await?;
             async move {
                 let msg = consumer.next().await.unwrap().unwrap();
                 msg.ack(false).await.unwrap();
@@ -143,8 +143,8 @@ mod tests {
             }
         });
 
-        let channel = Channel::new(&connection, "".to_owned()).await.unwrap();
-        let publisher: Publisher<FrameBus> = channel.publisher();
+        let channel = RpcChannel::new(&connection, "".to_owned()).await.unwrap();
+        let publisher: Publisher<_, FrameBus> = channel.publisher();
 
         let mut rx = publisher
             .publish_recv_many(&FramePayload {
@@ -165,8 +165,8 @@ mod tests {
         let connection = Connection::connect(RABBIT_MQ_URL).await.unwrap();
         let uuid = Uuid::new_v4();
         tokio::task::spawn({
-            let channel = Channel::new(&connection, "".to_owned()).await.unwrap();
-            let mut consumer: Consumer<FrameBus> = channel.consumer("consumer").await?;
+            let channel = RpcChannel::new(&connection, "".to_owned()).await.unwrap();
+            let mut consumer: Consumer<_, FrameBus> = channel.consumer("consumer").await?;
             async move {
                 let msg = consumer.next().await.unwrap().unwrap();
                 msg.ack(false).await.unwrap();
@@ -178,8 +178,8 @@ mod tests {
             }
         });
 
-        let channel = Channel::new(&connection, "".to_owned()).await.unwrap();
-        let publisher: Publisher<FrameBus> = channel.publisher();
+        let channel = RpcChannel::new(&connection, "".to_owned()).await.unwrap();
+        let publisher: Publisher<_, FrameBus> = channel.publisher();
 
         let fut = publisher
             .publish_recv_one(&FramePayload {
