@@ -2,7 +2,7 @@ use std::{marker::PhantomData, sync::Arc, task::Poll};
 
 use async_trait::async_trait;
 use dashmap::DashMap;
-use futures::{StreamExt, Stream, Future};
+use futures::{Future, Stream, StreamExt};
 use lapin::{options::BasicConsumeOptions, BasicProperties};
 use pin_project::{pin_project, pinned_drop};
 use serde::{Deserialize, Serialize};
@@ -12,9 +12,9 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use crate::{delivery_uuid, Connection, Result, Delivery};
+use crate::{delivery_uuid, Connection, Delivery, Result};
 
-use super::{Channel, Consumer, Publisher, direct::DirectBus};
+use super::{direct::DirectBus, Channel, Consumer, Publisher};
 
 pub trait RpcBus: DirectBus {
     type ReplyPayload;
@@ -188,7 +188,6 @@ where
     }
 }
 
-
 #[pin_project(PinnedDrop)]
 struct ReplyReceiver<T> {
     #[pin]
@@ -220,5 +219,107 @@ impl<T> PinnedDrop for ReplyReceiver<T> {
         let chan = this.chan.take().unwrap();
         let correlation_uuid = *this.correlation_uuid;
         task::spawn_blocking(move || chan.remove_pending_reply(&correlation_uuid));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use std::time::Duration;
+
+    use futures::StreamExt;
+    use serde::{Deserialize, Serialize};
+    use tokio::time::timeout;
+    use uuid::Uuid;
+
+    use crate::{
+        chan::{
+            rpc::{RpcBus, RpcChannel},
+            tests::{FrameBus, FramePayload, RABBIT_MQ_URL},
+            Consumer, Publisher,
+        },
+        Connection,
+    };
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub enum FrameSendError {
+        ClientDisconnected,
+        Other,
+    }
+
+    impl RpcBus for FrameBus {
+        type ReplyPayload = Result<(), FrameSendError>;
+    }
+
+    #[tokio::test]
+    async fn publish_recv_many() -> crate::Result<()> {
+        let connection = Connection::connect(RABBIT_MQ_URL).await.unwrap();
+        let uuid = Uuid::new_v4();
+        tokio::task::spawn({
+            let channel = RpcChannel::new(&connection).await.unwrap();
+            let mut consumer: Consumer<_, FrameBus> =
+                channel.consumer(&Uuid::new_v4().to_string()).await?;
+            async move {
+                let msg = consumer.next().await.unwrap().unwrap();
+                msg.ack(false).await.unwrap();
+                let payload = msg.get_payload().unwrap();
+                assert_eq!(payload.message, uuid.to_string());
+                for _ in 0..3 {
+                    msg.reply(&Err(FrameSendError::ClientDisconnected), &channel)
+                        .await
+                        .unwrap();
+                }
+            }
+        });
+
+        let channel = RpcChannel::new(&connection).await.unwrap();
+        let publisher: Publisher<_, FrameBus> = channel.publisher();
+
+        let mut rx = publisher
+            .publish_recv_many(&FramePayload {
+                message: uuid.to_string(),
+            })
+            .await
+            .unwrap();
+
+        for _ in 0..3 {
+            timeout(Duration::from_secs(1), rx.next()).await.unwrap();
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn publish_recv_one() -> Result<(), crate::Error> {
+        let connection = Connection::connect(RABBIT_MQ_URL).await.unwrap();
+        let uuid = Uuid::new_v4();
+        tokio::task::spawn({
+            let channel = RpcChannel::new(&connection).await.unwrap();
+            let mut consumer: Consumer<_, FrameBus> =
+                channel.consumer(&Uuid::new_v4().to_string()).await?;
+            async move {
+                let msg = consumer.next().await.unwrap().unwrap();
+                msg.ack(false).await.unwrap();
+                let payload = msg.get_payload().unwrap();
+                assert_eq!(payload.message, uuid.to_string());
+                msg.reply(&Err(FrameSendError::ClientDisconnected), &channel)
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let channel = RpcChannel::new(&connection).await.unwrap();
+        let publisher: Publisher<_, FrameBus> = channel.publisher();
+
+        let fut = publisher
+            .publish_recv_one(&FramePayload {
+                message: uuid.to_string(),
+            })
+            .await
+            .unwrap();
+
+        timeout(Duration::from_secs(1), fut).await.unwrap();
+
+        Ok(())
     }
 }

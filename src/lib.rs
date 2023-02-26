@@ -1,9 +1,6 @@
 use std::{fmt::Debug, marker::PhantomData, str::FromStr};
 
-use chan::{
-    rpc::{RpcBus, RpcChannel},
-    Channel,
-};
+use chan::{rpc::RpcBus, Channel};
 
 use error::{Error, ReplyError};
 use lapin::options::BasicAckOptions;
@@ -62,7 +59,7 @@ where
     R: Deserialize<'r> + Serialize,
     B: RpcBus<PublishPayload = P, ReplyPayload = R>,
 {
-    pub async fn reply(&'p self, reply_payload: &R, chan: &RpcChannel) -> Result<()> {
+    pub async fn reply(&'p self, reply_payload: &R, chan: &impl Channel) -> Result<()> {
         let Some(correlation_uuid) = self.get_uuid() else {
             return Err(Error::Reply(ReplyError::NoCorrelationUuid));
         };
@@ -93,119 +90,4 @@ fn delivery_uuid(delivery: &lapin::message::Delivery) -> Option<Result<Uuid>> {
         return None;
     };
     Some(Uuid::from_str(correlation_id.as_str()).map_err(Into::into))
-}
-
-#[cfg(test)]
-mod tests {
-    const RABBIT_MQ_URL: &str = "amqp://tg:secret@localhost:5672";
-    use std::time::Duration;
-
-    use futures::StreamExt;
-    use serde::{Deserialize, Serialize};
-    use tokio::time::timeout;
-    use uuid::Uuid;
-
-    use crate::{
-        chan::{
-            direct::DirectBus,
-            rpc::{RpcBus, RpcChannel},
-            Consumer, Publisher,
-        },
-        Bus, Connection,
-    };
-
-    #[derive(Debug, Serialize, Deserialize)]
-    struct FramePayload {
-        message: String,
-    }
-
-    #[derive(Debug, Serialize, Deserialize)]
-    enum FrameSendError {
-        ClientDisconnected,
-        Other,
-    }
-
-    struct FrameBus;
-
-    impl Bus for FrameBus {
-        type PublishPayload = FramePayload;
-    }
-
-    impl DirectBus for FrameBus {
-        const QUEUE: &'static str = "frame";
-    }
-
-    impl RpcBus for FrameBus {
-        type ReplyPayload = Result<(), FrameSendError>;
-    }
-
-    #[tokio::test]
-    async fn publish_recv_many() -> Result<(), crate::Error> {
-        let connection = Connection::connect(RABBIT_MQ_URL).await.unwrap();
-        let uuid = Uuid::new_v4();
-        tokio::task::spawn({
-            let channel = RpcChannel::new(&connection).await.unwrap();
-            let mut consumer: Consumer<_, FrameBus> = channel.consumer("consumer").await?;
-            async move {
-                let msg = consumer.next().await.unwrap().unwrap();
-                msg.ack(false).await.unwrap();
-                let payload = msg.get_payload().unwrap();
-                assert_eq!(payload.message, uuid.to_string());
-                for _ in 0..3 {
-                    msg.reply(&Err(FrameSendError::ClientDisconnected), &channel)
-                        .await
-                        .unwrap();
-                }
-            }
-        });
-
-        let channel = RpcChannel::new(&connection).await.unwrap();
-        let publisher: Publisher<_, FrameBus> = channel.publisher();
-
-        let mut rx = publisher
-            .publish_recv_many(&FramePayload {
-                message: uuid.to_string(),
-            })
-            .await
-            .unwrap();
-
-        for _ in 0..3 {
-            timeout(Duration::from_secs(1), rx.next()).await.unwrap();
-        }
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn publish_recv_one() -> Result<(), crate::Error> {
-        let connection = Connection::connect(RABBIT_MQ_URL).await.unwrap();
-        let uuid = Uuid::new_v4();
-        tokio::task::spawn({
-            let channel = RpcChannel::new(&connection).await.unwrap();
-            let mut consumer: Consumer<_, FrameBus> = channel.consumer("consumer").await?;
-            async move {
-                let msg = consumer.next().await.unwrap().unwrap();
-                msg.ack(false).await.unwrap();
-                let payload = msg.get_payload().unwrap();
-                assert_eq!(payload.message, uuid.to_string());
-                msg.reply(&Err(FrameSendError::ClientDisconnected), &channel)
-                    .await
-                    .unwrap();
-            }
-        });
-
-        let channel = RpcChannel::new(&connection).await.unwrap();
-        let publisher: Publisher<_, FrameBus> = channel.publisher();
-
-        let fut = publisher
-            .publish_recv_one(&FramePayload {
-                message: uuid.to_string(),
-            })
-            .await
-            .unwrap();
-
-        timeout(Duration::from_secs(1), fut).await.unwrap();
-
-        Ok(())
-    }
 }

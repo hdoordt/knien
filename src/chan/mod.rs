@@ -78,3 +78,24 @@ where
             .await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde::{Serialize, Deserialize};
+
+    use crate::Bus;
+
+    pub const RABBIT_MQ_URL: &str = "amqp://tg:secret@localhost:5672";
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct FramePayload {
+        pub message: String,
+    }
+
+
+    pub struct FrameBus;
+
+    impl Bus for FrameBus {
+        type PublishPayload = FramePayload;
+    }
+}
