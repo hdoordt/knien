@@ -1,3 +1,4 @@
+use std::fmt::Display;
 use std::marker::PhantomData;
 use std::str::Split;
 
@@ -39,18 +40,17 @@ impl TopicChannel {
         })
     }
 
-    pub async fn consumer<B: TopicBus, T: AsRef<str>>(
+    pub async fn consumer<B: TopicBus>(
         &self,
-        routing_key: RoutingKey<T, B>,
+        routing_key: RoutingKey<B>,
         consumer_tag: &str,
     ) -> Result<Consumer<Self, B>> {
-        let topic = routing_key.repr.as_ref();
         self.inner
-            .queue_declare(topic, Default::default(), Default::default())
+            .queue_declare(&routing_key.key, Default::default(), Default::default())
             .await?;
         let consumer = self
             .inner
-            .basic_consume(topic, consumer_tag, Default::default(), Default::default())
+            .basic_consume(&routing_key.key, consumer_tag, Default::default(), Default::default())
             .await?;
 
         Ok(Consumer {
@@ -93,25 +93,36 @@ impl Channel for TopicChannel {
     }
 }
 
-
-pub struct RoutingKey<T, B> {
-    repr: T,
+/// A Routing key that can be used to consume messages from a [TopicBus].
+/// See [RoutingKeyBuilder].
+#[derive(Debug)]
+pub struct RoutingKey<B> {
+    key: String,
     _marker: PhantomData<B>,
 }
 
+impl<B> Display for RoutingKey<B> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.key.fmt(f)
+    }
+}
+
+/// A builder for [RoutingKey]s. Enforces built routing keys
+/// are valid for the topic defined in the [TopicBus] this
+/// [RoutingKeyBuilder] is constructed for
 pub struct RoutingKeyBuilder<B> {
     iter: Split<'static, &'static str>,
-    repr: String,
+    key: String,
     _marker: PhantomData<B>,
 }
 
 impl<B: TopicBus> RoutingKeyBuilder<B> {
-    /// Create a new [TopicBuilder]
+    /// Create a new [RoutingKeyBuilder] for the [TopicBus]
     pub fn new() -> Self {
         let iter = B::TOPIC.split(".");
         Self {
             iter,
-            repr: String::new(),
+            key: String::new(),
             _marker: PhantomData,
         }
     }
@@ -120,7 +131,7 @@ impl<B: TopicBus> RoutingKeyBuilder<B> {
     pub fn word(self) -> Self {
         let RoutingKeyBuilder {
             mut iter,
-            mut repr,
+            key: mut repr,
             _marker,
         } = self;
         if !repr.is_empty() {
@@ -129,15 +140,16 @@ impl<B: TopicBus> RoutingKeyBuilder<B> {
         repr.push_str(iter.next().expect("No more parts left in topic"));
         Self {
             iter,
-            repr,
+            key: repr,
             _marker,
         }
     }
 
+    /// Add a star (`*`) to the routing key
     pub fn star(self) -> Self {
         let RoutingKeyBuilder {
             mut iter,
-            mut repr,
+            key: mut repr,
             _marker,
         } = self;
 
@@ -148,31 +160,28 @@ impl<B: TopicBus> RoutingKeyBuilder<B> {
         let _ = iter.next().expect("No more parts left in topic");
         Self {
             iter,
-            repr,
+            key: repr,
             _marker,
         }
     }
 
-    pub fn hash(self) -> RoutingKey<String, B> {
-        let mut repr = self.repr;
-        if !repr.is_empty() {
-            repr.push('.');
+    /// Add a hash (`*`) to the routing key, finishing the [RoutingKey]
+    pub fn hash(mut self) -> RoutingKey<B> {
+        if !self.key.is_empty() {
+            self.key.push('.');
         }
-        repr.push('#');
-        RoutingKey {
-            repr,
-            _marker: PhantomData,
-        }
+        self.key.push('#');
+        self.finish()
     }
 
-    pub fn finish(self) -> RoutingKey<String, B> {
+    /// Finish the [RoutingKey]
+    pub fn finish(self) -> RoutingKey<B> {
         RoutingKey {
-            repr: self.repr,
+            key: self.key,
             _marker: PhantomData,
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -182,34 +191,28 @@ mod tests {
     };
 
     #[test]
-    fn test_topic_builder() {
+    fn test_routing_key_builder() {
         struct MyTopic;
         impl Bus for MyTopic {
             type PublishPayload = ();
         }
         impl TopicBus for MyTopic {
-            const TOPIC: &'static str = "this.is.a.cool.topic";
+            const TOPIC: &'static str = "this.is.a.topic";
         }
 
         let builder: RoutingKeyBuilder<MyTopic> = RoutingKeyBuilder::new();
-        assert_eq!(builder.finish().repr, "");
+        assert_eq!(builder.finish().key, "");
 
         let builder: RoutingKeyBuilder<MyTopic> = RoutingKeyBuilder::new();
-        assert_eq!(builder.word().finish().repr, "this");
+        assert_eq!(builder.word().finish().key, "this");
 
         let builder: RoutingKeyBuilder<MyTopic> = RoutingKeyBuilder::new();
-        assert_eq!(builder.word().star().finish().repr, "this.*");
+        assert_eq!(builder.word().star().finish().key, "this.*");
 
         let builder: RoutingKeyBuilder<MyTopic> = RoutingKeyBuilder::new();
-        assert_eq!(
-            builder.word().star().word().finish().repr,
-            "this.*.a"
-        );
+        assert_eq!(builder.word().star().word().finish().key, "this.*.a");
 
         let builder: RoutingKeyBuilder<MyTopic> = RoutingKeyBuilder::new();
-        assert_eq!(
-            builder.word().star().word().hash().repr,
-            "this.*.a.#"
-        );
+        assert_eq!(builder.word().star().word().hash().key, "this.*.a.#");
     }
 }
