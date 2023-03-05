@@ -3,6 +3,7 @@ use std::iter::empty;
 use std::iter::once;
 use std::iter::Empty;
 use std::marker::PhantomData;
+use std::ops::Add;
 use std::str::Split;
 
 use async_trait::async_trait;
@@ -185,11 +186,85 @@ macro_rules! impl_routing_key_builder {
                 }
             }
 
-            pub fn hash(self) -> RoutingKey<B> {
-                let RoutingKeyBuilder { iter, _marker, .. } = self;
+            pub fn hash(
+                self,
+            ) -> RoutingKeyBuilder<B, impl Iterator<Item = &'static str>, NonEmpty> {
+                let RoutingKeyBuilder {
+                    mut split,
+                    iter,
+                    _marker,
+                    ..
+                } = self;
                 let iter = iter.chain($delim).chain(once("#"));
-                let key = String::from_iter(iter);
-                RoutingKey { key, _marker }
+                split.next();
+
+                RoutingKeyBuilder {
+                    split,
+                    iter,
+                    _state: PhantomData,
+                    _marker,
+                }
+            }
+        }
+
+        impl<B: TopicBus + 'static, I: Iterator<Item = &'static str> + 'static> Add<&'static str>
+            for RoutingKeyBuilder<B, I, $state>
+        {
+            type Output = RoutingKeyBuilder<B, Box<dyn Iterator<Item = &'static str>>, NonEmpty>;
+
+            fn add(self, rhs: &'static str) -> Self::Output {
+                match rhs {
+                    "*" => {
+                        let RoutingKeyBuilder {
+                            split,
+                            iter,
+                            _marker,
+                            ..
+                        } = self.star();
+                        RoutingKeyBuilder {
+                            split,
+                            // TODO: Not a big fan of this allocation
+                            iter: Box::new(iter),
+                            _state: PhantomData,
+                            _marker,
+                        }
+                    }
+                    "#" => {
+                        let RoutingKeyBuilder {
+                            split,
+                            iter,
+                            _marker,
+                            ..
+                        } = self.hash();
+                        RoutingKeyBuilder {
+                            split,
+                            // TODO: Not a big fan of this allocation
+                            iter: Box::new(iter),
+                            _state: PhantomData,
+                            _marker,
+                        }
+                    }
+                    word => {
+                        let RoutingKeyBuilder {
+                            mut split,
+                            iter,
+                            _marker,
+                            ..
+                        } = self;
+                        let next = split.next().unwrap();
+                        assert_eq!(
+                            next, word,
+                            "Invalid routing key part. Expected {next}, got {word}"
+                        );
+                        let iter = iter.chain($delim).chain(once(next));
+                        RoutingKeyBuilder {
+                            split,
+                            iter: Box::new(iter),
+                            _state: PhantomData,
+                            _marker,
+                        }
+                    }
+                }
             }
         }
     };
@@ -213,7 +288,7 @@ mod tests {
     }
 
     #[test]
-    fn test_routing_key_composer() {
+    fn test_routing_key_builder() {
         let builder: RoutingKeyBuilder<MyTopic, _, _> = RoutingKeyBuilder::new();
         assert_eq!(builder.finish().key, "");
 
@@ -227,6 +302,17 @@ mod tests {
         assert_eq!(builder.word().star().word().finish().key, "this.*.a");
 
         let builder: RoutingKeyBuilder<MyTopic, _, _> = RoutingKeyBuilder::new();
-        assert_eq!(builder.word().star().word().hash().key, "this.*.a.#");
+        assert_eq!(
+            builder.word().star().word().hash().finish().key,
+            "this.*.a.#"
+        );
+
+        let builder: RoutingKeyBuilder<MyTopic, _, _> = RoutingKeyBuilder::new();
+        let builder = builder + "this" + "*" + "a" + "#";
+        assert_eq!(builder.finish().key, "this.*.a.#");
+
+        let builder: RoutingKeyBuilder<MyTopic, _, _> = RoutingKeyBuilder::new();
+        let builder = builder + "this" + "is" + "a" + "topic";
+        assert_eq!(builder.finish().key, "this.is.a.topic");
     }
 }

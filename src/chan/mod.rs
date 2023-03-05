@@ -81,7 +81,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use serde::{Serialize, Deserialize};
+    use serde::{Deserialize, Serialize};
 
     use crate::Bus;
 
@@ -91,7 +91,6 @@ mod tests {
     pub struct FramePayload {
         pub message: String,
     }
-
 
     pub struct FrameBus;
 
