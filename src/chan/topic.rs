@@ -1,4 +1,7 @@
 use std::fmt::Display;
+use std::iter::empty;
+use std::iter::once;
+use std::iter::Empty;
 use std::marker::PhantomData;
 use std::str::Split;
 
@@ -50,7 +53,12 @@ impl TopicChannel {
             .await?;
         let consumer = self
             .inner
-            .basic_consume(&routing_key.key, consumer_tag, Default::default(), Default::default())
+            .basic_consume(
+                &routing_key.key,
+                consumer_tag,
+                Default::default(),
+                Default::default(),
+            )
             .await?;
 
         Ok(Consumer {
@@ -107,112 +115,118 @@ impl<B> Display for RoutingKey<B> {
     }
 }
 
-/// A builder for [RoutingKey]s. Enforces built routing keys
-/// are valid for the topic defined in the [TopicBus] this
-/// [RoutingKeyBuilder] is constructed for
-pub struct RoutingKeyBuilder<B> {
-    iter: Split<'static, &'static str>,
-    key: String,
+struct Initial;
+struct NonEmpty;
+
+pub struct RoutingKeyBuilder<B, I, S> {
+    split: Split<'static, &'static str>,
+    iter: I,
+    _state: PhantomData<S>,
     _marker: PhantomData<B>,
 }
 
-impl<B: TopicBus> RoutingKeyBuilder<B> {
-    /// Create a new [RoutingKeyBuilder] for the [TopicBus]
+impl<B: TopicBus> RoutingKeyBuilder<B, Empty<&'static str>, Initial> {
     pub fn new() -> Self {
-        let iter = B::TOPIC.split(".");
         Self {
-            iter,
-            key: String::new(),
-            _marker: PhantomData,
-        }
-    }
-
-    /// Add the next word to the routing key
-    pub fn word(self) -> Self {
-        let RoutingKeyBuilder {
-            mut iter,
-            key: mut repr,
-            _marker,
-        } = self;
-        if !repr.is_empty() {
-            repr.push('.');
-        }
-        repr.push_str(iter.next().expect("No more parts left in topic"));
-        Self {
-            iter,
-            key: repr,
-            _marker,
-        }
-    }
-
-    /// Add a star (`*`) to the routing key
-    pub fn star(self) -> Self {
-        let RoutingKeyBuilder {
-            mut iter,
-            key: mut repr,
-            _marker,
-        } = self;
-
-        if !repr.is_empty() {
-            repr.push('.');
-        }
-        repr.push('*');
-        let _ = iter.next().expect("No more parts left in topic");
-        Self {
-            iter,
-            key: repr,
-            _marker,
-        }
-    }
-
-    /// Add a hash (`*`) to the routing key, finishing the [RoutingKey]
-    pub fn hash(mut self) -> RoutingKey<B> {
-        if !self.key.is_empty() {
-            self.key.push('.');
-        }
-        self.key.push('#');
-        self.finish()
-    }
-
-    /// Finish the [RoutingKey]
-    pub fn finish(self) -> RoutingKey<B> {
-        RoutingKey {
-            key: self.key,
+            split: B::TOPIC.split("."),
+            iter: empty(),
+            _state: PhantomData,
             _marker: PhantomData,
         }
     }
 }
 
+impl<B: TopicBus, I: Iterator<Item = &'static str>, S> RoutingKeyBuilder<B, I, S> {
+    pub fn finish(self) -> RoutingKey<B> {
+        let RoutingKeyBuilder { iter, _marker, .. } = self;
+        let key = String::from_iter(iter);
+        RoutingKey { key, _marker }
+    }
+}
+
+macro_rules! impl_routing_key_builder {
+    ($state:ty, $delim:expr) => {
+        impl<B: TopicBus, I: Iterator<Item = &'static str>> RoutingKeyBuilder<B, I, $state> {
+            pub fn word(
+                self,
+            ) -> RoutingKeyBuilder<B, impl Iterator<Item = &'static str>, NonEmpty> {
+                let RoutingKeyBuilder {
+                    mut split,
+                    iter,
+                    _marker,
+                    ..
+                } = self;
+                let iter = iter.chain($delim).chain(split.next());
+                RoutingKeyBuilder {
+                    split,
+                    iter,
+                    _state: PhantomData,
+                    _marker,
+                }
+            }
+
+            pub fn star(
+                self,
+            ) -> RoutingKeyBuilder<B, impl Iterator<Item = &'static str>, NonEmpty> {
+                let RoutingKeyBuilder {
+                    mut split,
+                    iter,
+                    _marker,
+                    ..
+                } = self;
+                let iter = iter.chain($delim).chain(once("*"));
+                split.next();
+
+                RoutingKeyBuilder {
+                    split,
+                    iter,
+                    _state: PhantomData,
+                    _marker,
+                }
+            }
+
+            pub fn hash(self) -> RoutingKey<B> {
+                let RoutingKeyBuilder { iter, _marker, .. } = self;
+                let iter = iter.chain($delim).chain(once("#"));
+                let key = String::from_iter(iter);
+                RoutingKey { key, _marker }
+            }
+        }
+    };
+}
+
+impl_routing_key_builder!(Initial, empty());
+impl_routing_key_builder!(NonEmpty, once("."));
+
 #[cfg(test)]
 mod tests {
-    use crate::{
-        chan::topic::{RoutingKeyBuilder, TopicBus},
-        Bus,
-    };
+    use crate::{chan::topic::TopicBus, Bus};
+
+    use super::RoutingKeyBuilder;
+
+    struct MyTopic;
+    impl Bus for MyTopic {
+        type PublishPayload = ();
+    }
+    impl TopicBus for MyTopic {
+        const TOPIC: &'static str = "this.is.a.topic";
+    }
 
     #[test]
-    fn test_routing_key_builder() {
-        struct MyTopic;
-        impl Bus for MyTopic {
-            type PublishPayload = ();
-        }
-        impl TopicBus for MyTopic {
-            const TOPIC: &'static str = "this.is.a.topic";
-        }
-
-        let builder: RoutingKeyBuilder<MyTopic> = RoutingKeyBuilder::new();
+    fn test_routing_key_composer() {
+        let builder: RoutingKeyBuilder<MyTopic, _, _> = RoutingKeyBuilder::new();
         assert_eq!(builder.finish().key, "");
 
-        let builder: RoutingKeyBuilder<MyTopic> = RoutingKeyBuilder::new();
+        let builder: RoutingKeyBuilder<MyTopic, _, _> = RoutingKeyBuilder::new();
         assert_eq!(builder.word().finish().key, "this");
 
-        let builder: RoutingKeyBuilder<MyTopic> = RoutingKeyBuilder::new();
+        let builder: RoutingKeyBuilder<MyTopic, _, _> = RoutingKeyBuilder::new();
         assert_eq!(builder.word().star().finish().key, "this.*");
 
-        let builder: RoutingKeyBuilder<MyTopic> = RoutingKeyBuilder::new();
+        let builder: RoutingKeyBuilder<MyTopic, _, _> = RoutingKeyBuilder::new();
         assert_eq!(builder.word().star().word().finish().key, "this.*.a");
 
-        let builder: RoutingKeyBuilder<MyTopic> = RoutingKeyBuilder::new();
+        let builder: RoutingKeyBuilder<MyTopic, _, _> = RoutingKeyBuilder::new();
         assert_eq!(builder.word().star().word().hash().key, "this.*.a.#");
     }
 }
