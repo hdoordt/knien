@@ -9,7 +9,9 @@ use crate::{Bus, Connection, Result};
 use super::{Channel, Consumer, Publisher};
 
 pub trait DirectBus: Bus {
-    const QUEUE: &'static str;
+    type Args;
+
+    fn queue(args: Self::Args) -> String;
 }
 
 #[derive(Clone)]
@@ -24,18 +26,18 @@ impl DirectChannel {
         Ok(Self { inner: chan })
     }
 
-    pub async fn consumer<B: DirectBus>(&self, consumer_tag: &str) -> Result<Consumer<Self, B>> {
+    pub async fn consumer<A, B: DirectBus<Args = A>>(
+        &self,
+        args: A,
+        consumer_tag: &str,
+    ) -> Result<Consumer<Self, B>> {
+        let queue = B::queue(args);
         self.inner
-            .queue_declare(B::QUEUE, Default::default(), Default::default())
+            .queue_declare(&queue, Default::default(), Default::default())
             .await?;
         let consumer = self
             .inner
-            .basic_consume(
-                B::QUEUE,
-                consumer_tag,
-                Default::default(),
-                Default::default(),
-            )
+            .basic_consume(&queue, consumer_tag, Default::default(), Default::default())
             .await?;
 
         Ok(Consumer {
@@ -53,16 +55,21 @@ impl DirectChannel {
     }
 }
 
-impl<'p, C, B, P> Publisher<C, B>
+impl<'p, A, C, B, P> Publisher<C, B>
 where
     C: Channel,
     P: Deserialize<'p> + Serialize,
-    B: DirectBus<PublishPayload = P>,
+    B: DirectBus<PublishPayload = P, Args = A>,
 {
-    pub async fn publish(&self, payload: &P) -> Result<()> {
+    pub async fn publish(&self, args: A, payload: &P) -> Result<()> {
         let correlation_uuid = Uuid::new_v4();
-        self.publish_with_properties(B::QUEUE, payload, Default::default(), correlation_uuid)
-            .await
+        self.publish_with_properties(
+            &B::queue(args),
+            payload,
+            Default::default(),
+            correlation_uuid,
+        )
+        .await
     }
 }
 
@@ -105,7 +112,11 @@ pub mod tests {
     use super::DirectBus;
 
     impl DirectBus for FrameBus {
-        const QUEUE: &'static str = "frame";
+        type Args = u32;
+
+        fn queue(args: Self::Args) -> String {
+            format!("frame {}", args)
+        }
     }
 
     #[tokio::test]
@@ -115,7 +126,8 @@ pub mod tests {
         let (tx, rx) = oneshot::channel();
         tokio::task::spawn({
             let channel = DirectChannel::new(&connection).await.unwrap();
-            let mut consumer: Consumer<_, FrameBus> = channel.consumer(&Uuid::new_v4().to_string()).await?;
+            let mut consumer: Consumer<_, FrameBus> =
+                channel.consumer(3, &Uuid::new_v4().to_string()).await?;
             async move {
                 let msg = consumer.next().await.unwrap().unwrap();
                 msg.ack(false).await.unwrap();
@@ -129,9 +141,12 @@ pub mod tests {
         let publisher: Publisher<_, FrameBus> = channel.publisher();
 
         publisher
-            .publish(&FramePayload {
-                message: uuid.to_string(),
-            })
+            .publish(
+                3,
+                &FramePayload {
+                    message: uuid.to_string(),
+                },
+            )
             .await
             .unwrap();
 

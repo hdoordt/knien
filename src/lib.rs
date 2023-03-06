@@ -74,6 +74,26 @@ where
         chan.publish_with_properties(&bytes, reply_to, Default::default(), correlation_uuid)
             .await
     }
+
+    pub async fn reply_map<M, Q>(&'p self, reply_payload: &Q, chan: &impl Channel) -> Result<()>
+    where
+        M: RpcBus<PublishPayload = R, ReplyPayload = Q>,
+        Q: Deserialize<'p> + Serialize,
+    {
+        let Some(correlation_uuid) = self.get_uuid() else {
+            return Err(Error::Reply(ReplyError::NoCorrelationUuid));
+        };
+        let Some(reply_to) = self.inner.properties.reply_to().as_ref().map(|r | r.as_str()) else {
+            return Err(Error::Reply(ReplyError::NoReplyToConfigured))
+        };
+
+        let correlation_uuid = correlation_uuid?;
+
+        let bytes = serde_json::to_vec(reply_payload)?;
+
+        chan.publish_with_properties(&bytes, reply_to, Default::default(), correlation_uuid)
+            .await
+    }
 }
 
 impl<B> From<lapin::message::Delivery> for Delivery<B> {

@@ -3,7 +3,6 @@ use std::iter::empty;
 use std::iter::once;
 use std::iter::Empty;
 use std::marker::PhantomData;
-use std::ops::Add;
 use std::str::Split;
 
 use async_trait::async_trait;
@@ -120,16 +119,22 @@ struct Initial;
 struct NonEmpty;
 
 pub struct RoutingKeyBuilder<B, I, S> {
-    split: Split<'static, &'static str>,
+    split: Split<'static, char>,
     iter: I,
     _state: PhantomData<S>,
     _marker: PhantomData<B>,
 }
 
+impl<B: TopicBus> Default for RoutingKeyBuilder<B, Empty<&'static str>, Initial> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<B: TopicBus> RoutingKeyBuilder<B, Empty<&'static str>, Initial> {
     pub fn new() -> Self {
         Self {
-            split: B::TOPIC.split("."),
+            split: B::TOPIC.split('.'),
             iter: empty(),
             _state: PhantomData,
             _marker: PhantomData,
@@ -207,7 +212,7 @@ macro_rules! impl_routing_key_builder {
             }
         }
 
-        impl<B: TopicBus + 'static, I: Iterator<Item = &'static str> + 'static> Add<&'static str>
+        impl<B: TopicBus + 'static, I: Iterator<Item = &'static str> + 'static> std::ops::Add<&'static str>
             for RoutingKeyBuilder<B, I, $state>
         {
             type Output = RoutingKeyBuilder<B, Box<dyn Iterator<Item = &'static str>>, NonEmpty>;
@@ -279,6 +284,7 @@ mod tests {
 
     use super::RoutingKeyBuilder;
 
+    #[derive(Debug)]
     struct MyTopic;
     impl Bus for MyTopic {
         type PublishPayload = ();

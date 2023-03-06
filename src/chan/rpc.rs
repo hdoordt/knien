@@ -105,18 +105,18 @@ impl RpcChannel {
         self.pending_replies.remove(correlation_uuid);
     }
 
-    pub async fn consumer<B: RpcBus>(&self, consumer_tag: &str) -> Result<Consumer<Self, B>> {
+    pub async fn consumer<A, B: RpcBus<Args = A>>(
+        &self,
+        args: A,
+        consumer_tag: &str,
+    ) -> Result<Consumer<Self, B>> {
+        let queue = B::queue(args);
         self.inner
-            .queue_declare(B::QUEUE, Default::default(), Default::default())
+            .queue_declare(&queue, Default::default(), Default::default())
             .await?;
         let consumer = self
             .inner
-            .basic_consume(
-                B::QUEUE,
-                consumer_tag,
-                Default::default(),
-                Default::default(),
-            )
+            .basic_consume(&queue, consumer_tag, Default::default(), Default::default())
             .await?;
 
         Ok(Consumer {
@@ -153,13 +153,17 @@ impl Channel for RpcChannel {
     }
 }
 
-impl<'r, 'p, B, P, R> Publisher<RpcChannel, B>
+impl<'r, 'p, A, B, P, R> Publisher<RpcChannel, B>
 where
     P: Deserialize<'p> + Serialize,
     R: Deserialize<'r> + Serialize,
-    B: RpcBus<PublishPayload = P, ReplyPayload = R>,
+    B: RpcBus<PublishPayload = P, ReplyPayload = R, Args = A>,
 {
-    pub async fn publish_recv_many(&self, payload: &P) -> Result<impl Stream<Item = Delivery<R>>> {
+    pub async fn publish_recv_many(
+        &self,
+        args: A,
+        payload: &P,
+    ) -> Result<impl Stream<Item = Delivery<B>>> {
         let correlation_uuid = Uuid::new_v4();
         let (tx, rx) = mpsc::unbounded_channel();
 
@@ -174,33 +178,34 @@ where
 
         let properties = BasicProperties::default().with_reply_to("amq.rabbitmq.reply-to".into());
 
-        self.publish_with_properties(B::QUEUE, payload, properties, correlation_uuid)
+        self.publish_with_properties(&B::queue(args), payload, properties, correlation_uuid)
             .await?;
         Ok(rx)
     }
 
     pub async fn publish_recv_one(
         &'r self,
+        args: A,
         payload: &P,
-    ) -> Result<impl Future<Output = Option<Delivery<R>>>> {
-        let rx = self.publish_recv_many(payload).await?;
+    ) -> Result<impl Future<Output = Option<Delivery<B>>>> {
+        let rx = self.publish_recv_many(args, payload).await?;
         Ok(async { rx.take(1).next().await })
     }
 }
 
 #[pin_project(PinnedDrop)]
-struct ReplyReceiver<T> {
+struct ReplyReceiver<B> {
     #[pin]
     correlation_uuid: Uuid,
     #[pin]
     inner: mpsc::UnboundedReceiver<lapin::message::Delivery>,
     #[pin]
     chan: Option<RpcChannel>,
-    _marker: PhantomData<T>,
+    _marker: PhantomData<B>,
 }
 
-impl<'d, T: Deserialize<'d> + Serialize> Stream for ReplyReceiver<T> {
-    type Item = Delivery<T>;
+impl<'d, R: Deserialize<'d> + Serialize, B: RpcBus<ReplyPayload = R>> Stream for ReplyReceiver<B> {
+    type Item = Delivery<B>;
 
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
@@ -258,7 +263,7 @@ mod tests {
         tokio::task::spawn({
             let channel = RpcChannel::new(&connection).await.unwrap();
             let mut consumer: Consumer<_, FrameBus> =
-                channel.consumer(&Uuid::new_v4().to_string()).await?;
+                channel.consumer(3, &Uuid::new_v4().to_string()).await?;
             async move {
                 let msg = consumer.next().await.unwrap().unwrap();
                 msg.ack(false).await.unwrap();
@@ -276,9 +281,12 @@ mod tests {
         let publisher: Publisher<_, FrameBus> = channel.publisher();
 
         let mut rx = publisher
-            .publish_recv_many(&FramePayload {
-                message: uuid.to_string(),
-            })
+            .publish_recv_many(
+                3,
+                &FramePayload {
+                    message: uuid.to_string(),
+                },
+            )
             .await
             .unwrap();
 
@@ -296,7 +304,7 @@ mod tests {
         tokio::task::spawn({
             let channel = RpcChannel::new(&connection).await.unwrap();
             let mut consumer: Consumer<_, FrameBus> =
-                channel.consumer(&Uuid::new_v4().to_string()).await?;
+                channel.consumer(4, &Uuid::new_v4().to_string()).await?;
             async move {
                 let msg = consumer.next().await.unwrap().unwrap();
                 msg.ack(false).await.unwrap();
@@ -312,9 +320,12 @@ mod tests {
         let publisher: Publisher<_, FrameBus> = channel.publisher();
 
         let fut = publisher
-            .publish_recv_one(&FramePayload {
-                message: uuid.to_string(),
-            })
+            .publish_recv_one(
+                4,
+                &FramePayload {
+                    message: uuid.to_string(),
+                },
+            )
             .await
             .unwrap();
 

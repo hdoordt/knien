@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 #[derive(Debug)]
 pub enum Error {
     Mq(lapin::Error),
@@ -24,8 +26,34 @@ impl From<uuid::Error> for Error {
     }
 }
 
+impl Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::Mq(e) => write!(f, "Rabbit MQ error: {e}"),
+            Error::Serde(e) => write!(f, "(De)serialization error {e}"),
+            Error::Uuid(e) => write!(f, "UUID error: {e}"),
+            Error::Reply(e) => write!(f, "Reply error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
 #[derive(Debug)]
 pub enum ReplyError {
     NoCorrelationUuid,
     NoReplyToConfigured,
+}
+
+impl Display for ReplyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReplyError::NoCorrelationUuid => {
+                write!(f, "No correlation Uuid configured for the message")
+            }
+            ReplyError::NoReplyToConfigured => {
+                write!(f, "No value configured for the reply-to field")
+            }
+        }
+    }
 }
