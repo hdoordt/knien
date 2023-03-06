@@ -26,9 +26,9 @@ impl DirectChannel {
         Ok(Self { inner: chan })
     }
 
-    pub async fn consumer<A, B: DirectBus<Args = A>>(
+    pub async fn consumer<B: DirectBus>(
         &self,
-        args: A,
+        args: B::Args,
         consumer_tag: &str,
     ) -> Result<Consumer<Self, B>> {
         let queue = B::queue(args);
@@ -55,13 +55,13 @@ impl DirectChannel {
     }
 }
 
-impl<'p, A, C, B, P> Publisher<C, B>
+impl<'p, C, B> Publisher<C, B>
 where
     C: Channel,
-    P: Deserialize<'p> + Serialize,
-    B: DirectBus<PublishPayload = P, Args = A>,
+    B: DirectBus,
+    B::PublishPayload: Deserialize<'p> + Serialize,
 {
-    pub async fn publish(&self, args: A, payload: &P) -> Result<()> {
+    pub async fn publish(&self, args: B::Args, payload: &B::PublishPayload) -> Result<()> {
         let correlation_uuid = Uuid::new_v4();
         self.publish_with_properties(
             &B::queue(args),

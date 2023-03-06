@@ -12,7 +12,7 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use crate::{delivery_uuid, Connection, Delivery, Result, Bus};
+use crate::{delivery_uuid, Bus, Connection, Delivery, Result};
 
 use super::{direct::DirectBus, Channel, Consumer, Publisher};
 
@@ -27,16 +27,15 @@ pub struct RpcChannel {
 }
 
 #[derive(Debug)]
-pub struct Reply<B>{
-    _marker: B
+pub struct Reply<B> {
+    _marker: B,
 }
 
 impl<B: RpcBus> Bus for Reply<B> {
     type PublishPayload = B::ReplyPayload;
 }
 
-impl <B: RpcBus> DirectBus for Reply<B> {
-
+impl<B: RpcBus> DirectBus for Reply<B> {
     type Args = B::Args;
 
     fn queue(args: Self::Args) -> String {
@@ -44,7 +43,7 @@ impl <B: RpcBus> DirectBus for Reply<B> {
     }
 }
 
-impl <B: RpcBus> RpcBus for Reply<B> {
+impl<B: RpcBus> RpcBus for Reply<B> {
     type ReplyPayload = B::PublishPayload;
 }
 
@@ -127,9 +126,9 @@ impl RpcChannel {
         self.pending_replies.remove(correlation_uuid);
     }
 
-    pub async fn consumer<A, B: RpcBus<Args = A>>(
+    pub async fn consumer<B: RpcBus>(
         &self,
-        args: A,
+        args: B::Args,
         consumer_tag: &str,
     ) -> Result<Consumer<Self, B>> {
         let queue = B::queue(args);
@@ -175,16 +174,16 @@ impl Channel for RpcChannel {
     }
 }
 
-impl<'r, 'p, A, B, P, R> Publisher<RpcChannel, B>
+impl<'r, 'p, B> Publisher<RpcChannel, B>
 where
-    P: Deserialize<'p> + Serialize,
-    R: Deserialize<'r> + Serialize,
-    B: RpcBus<PublishPayload = P, ReplyPayload = R, Args = A>,
+    B::PublishPayload: Deserialize<'p> + Serialize,
+    B::ReplyPayload: Deserialize<'r> + Serialize,
+    B: RpcBus,
 {
     pub async fn publish_recv_many(
         &self,
-        args: A,
-        payload: &P,
+        args: B::Args,
+        payload: &B::PublishPayload,
     ) -> Result<impl Stream<Item = Delivery<Reply<B>>>> {
         let correlation_uuid = Uuid::new_v4();
         let (tx, rx) = mpsc::unbounded_channel();
@@ -207,8 +206,8 @@ where
 
     pub async fn publish_recv_one(
         &'r self,
-        args: A,
-        payload: &P,
+        args: B::Args,
+        payload: &B::PublishPayload,
     ) -> Result<impl Future<Output = Option<Delivery<Reply<B>>>>> {
         let rx = self.publish_recv_many(args, payload).await?;
         Ok(async { rx.take(1).next().await })
@@ -226,7 +225,11 @@ struct ReplyReceiver<B> {
     _marker: PhantomData<B>,
 }
 
-impl<'d, R: Deserialize<'d> + Serialize, B: RpcBus<ReplyPayload = R>> Stream for ReplyReceiver<B> {
+impl<'d, B> Stream for ReplyReceiver<B>
+where
+    B: RpcBus,
+    B::ReplyPayload: Deserialize<'d> + Serialize,
+{
     type Item = Delivery<B>;
 
     fn poll_next(

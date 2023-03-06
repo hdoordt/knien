@@ -1,7 +1,5 @@
 use std::{fmt::Debug, marker::PhantomData, str::FromStr};
 
-use chan::{rpc::RpcBus, Channel};
-
 use error::{Error, ReplyError};
 use lapin::options::{BasicAckOptions, BasicNackOptions};
 use serde::{Deserialize, Serialize};
@@ -10,6 +8,9 @@ use uuid::Uuid;
 
 pub mod chan;
 pub mod error;
+
+pub use chan::*;
+pub use error::*;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -34,12 +35,12 @@ pub struct Delivery<B> {
     _marker: PhantomData<B>,
 }
 
-impl<'p, 'r, B, P> Delivery<B>
+impl<'p, 'r, B> Delivery<B>
 where
-    P: Deserialize<'p> + Serialize,
-    B: Bus<PublishPayload = P>,
+    B: Bus,
+    B::PublishPayload: Deserialize<'p> + Serialize,
 {
-    pub fn get_payload(&'p self) -> Result<P> {
+    pub fn get_payload(&'p self) -> Result<B::PublishPayload> {
         Ok(serde_json::from_slice(&self.inner.data)?)
     }
 
@@ -53,21 +54,24 @@ where
     }
 
     pub async fn nack(&self, multiple: bool, requeue: bool) -> Result<()> {
-        self.inner.nack(BasicNackOptions {
-            multiple,
-            requeue,
-        }).await?;
+        self.inner
+            .nack(BasicNackOptions { multiple, requeue })
+            .await?;
         Ok(())
     }
 }
 
-impl<'p, 'r, B, P, R> Delivery<B>
+impl<'p, 'r, B> Delivery<B>
 where
-    P: Deserialize<'p> + Serialize + Debug,
-    R: Deserialize<'r> + Serialize,
-    B: RpcBus<PublishPayload = P, ReplyPayload = R>,
+    B: RpcBus,
+    B::PublishPayload: Deserialize<'p> + Serialize,
+    B::ReplyPayload: Deserialize<'r> + Serialize,
 {
-    pub async fn reply(&'p self, reply_payload: &R, chan: &impl Channel) -> Result<()> {
+    pub async fn reply(
+        &'p self,
+        reply_payload: &B::ReplyPayload,
+        chan: &impl Channel,
+    ) -> Result<()> {
         let Some(correlation_uuid) = self.get_uuid() else {
             return Err(Error::Reply(ReplyError::NoCorrelationUuid));
         };
@@ -83,10 +87,14 @@ where
             .await
     }
 
-    pub async fn reply_map<M, Q>(&'p self, reply_payload: &Q, chan: &impl Channel) -> Result<()>
+    pub async fn reply_map<R, Q>(
+        &'p self,
+        reply_payload: &R::ReplyPayload,
+        chan: &impl Channel,
+    ) -> Result<()>
     where
-        M: RpcBus<PublishPayload = R, ReplyPayload = Q>,
-        Q: Deserialize<'p> + Serialize,
+        R: RpcBus<PublishPayload = B::ReplyPayload>,
+        R::ReplyPayload: Deserialize<'p> + Serialize,
     {
         let Some(correlation_uuid) = self.get_uuid() else {
             return Err(Error::Reply(ReplyError::NoCorrelationUuid));

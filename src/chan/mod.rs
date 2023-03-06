@@ -15,6 +15,10 @@ pub mod direct;
 pub mod rpc;
 pub mod topic;
 
+pub use direct::*;
+pub use rpc::*;
+pub use topic::*;
+
 #[async_trait]
 pub trait Channel: Clone {
     async fn publish_with_properties(
@@ -34,11 +38,11 @@ pub struct Consumer<C, B> {
     _marker: PhantomData<B>,
 }
 
-impl<'p, C, B, P> Stream for Consumer<C, B>
+impl<'p, C, B> Stream for Consumer<C, B>
 where
     C: Channel,
-    P: Deserialize<'p> + Serialize,
-    B: Bus<PublishPayload = P>,
+    B: Bus,
+    B::PublishPayload: Deserialize<'p> + Serialize,
 {
     type Item = Result<Delivery<B>>;
 
@@ -59,16 +63,16 @@ pub struct Publisher<C, B> {
     _marker: PhantomData<B>,
 }
 
-impl<'p, C, B, P> Publisher<C, B>
+impl<'p, C, B> Publisher<C, B>
 where
     C: Channel,
-    P: Deserialize<'p> + Serialize,
-    B: DirectBus<PublishPayload = P>,
+    B: DirectBus,
+    B::PublishPayload: Deserialize<'p> + Serialize,
 {
     async fn publish_with_properties(
         &self,
         routing_key: &str,
-        payload: &P,
+        payload: &B::PublishPayload,
         properties: BasicProperties,
         correlation_uuid: Uuid,
     ) -> Result<()> {

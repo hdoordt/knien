@@ -16,21 +16,26 @@ use super::Channel;
 use super::Consumer;
 use super::Publisher;
 
+pub trait Exchange: Clone + Send + Sync {
+    const NAME: &'static str;
+}
+
 pub trait TopicBus: Bus {
+    type Exchange;
     const TOPIC: &'static str;
 }
 
 #[derive(Clone)]
-pub struct TopicChannel {
+pub struct TopicChannel<E> {
     inner: lapin::Channel,
-    exchange: String,
+    _marker: PhantomData<E>,
 }
 
-impl TopicChannel {
-    pub async fn new(connection: &Connection, exchange: String) -> Result<Self> {
+impl<E: Exchange> TopicChannel<E> {
+    pub async fn new(connection: &Connection) -> Result<Self> {
         let chan = connection.inner.create_channel().await?;
         chan.exchange_declare(
-            exchange.as_ref(),
+            E::NAME,
             lapin::ExchangeKind::Topic,
             Default::default(),
             Default::default(),
@@ -39,7 +44,7 @@ impl TopicChannel {
 
         Ok(Self {
             inner: chan,
-            exchange,
+            _marker: PhantomData,
         })
     }
 
@@ -77,7 +82,7 @@ impl TopicChannel {
 }
 
 #[async_trait]
-impl Channel for TopicChannel {
+impl<E: Exchange> Channel for TopicChannel<E> {
     async fn publish_with_properties(
         &self,
         bytes: &[u8],
@@ -88,13 +93,7 @@ impl Channel for TopicChannel {
         let properties = properties.with_correlation_id(correlation_uuid.to_string().into());
 
         self.inner
-            .basic_publish(
-                self.exchange.as_ref(),
-                routing_key,
-                Default::default(),
-                bytes,
-                properties,
-            )
+            .basic_publish(E::NAME, routing_key, Default::default(), bytes, properties)
             .await?;
 
         Ok(())
@@ -212,8 +211,8 @@ macro_rules! impl_routing_key_builder {
             }
         }
 
-        impl<B: TopicBus + 'static, I: Iterator<Item = &'static str> + 'static> std::ops::Add<&'static str>
-            for RoutingKeyBuilder<B, I, $state>
+        impl<B: TopicBus + 'static, I: Iterator<Item = &'static str> + 'static>
+            std::ops::Add<&'static str> for RoutingKeyBuilder<B, I, $state>
         {
             type Output = RoutingKeyBuilder<B, Box<dyn Iterator<Item = &'static str>>, NonEmpty>;
 
@@ -278,11 +277,25 @@ macro_rules! impl_routing_key_builder {
 impl_routing_key_builder!(Initial, empty());
 impl_routing_key_builder!(NonEmpty, once("."));
 
+#[macro_export]
+macro_rules! routing_key_builder {
+    ($bus:ty) => {
+        $crate::RoutingKeyBuilder::<FrameForDis, _, _>::new()
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{chan::topic::TopicBus, Bus};
 
-    use super::RoutingKeyBuilder;
+    use super::{Exchange, RoutingKeyBuilder};
+
+    #[derive(Clone)]
+    enum MyExchange {}
+
+    impl Exchange for MyExchange {
+        const NAME: &'static str = "the_exchange";
+    }
 
     #[derive(Debug)]
     struct MyTopic;
@@ -290,6 +303,7 @@ mod tests {
         type PublishPayload = ();
     }
     impl TopicBus for MyTopic {
+        type Exchange = MyExchange;
         const TOPIC: &'static str = "this.is.a.topic";
     }
 
