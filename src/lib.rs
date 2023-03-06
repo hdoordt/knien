@@ -3,7 +3,7 @@ use std::{fmt::Debug, marker::PhantomData, str::FromStr};
 use chan::{rpc::RpcBus, Channel};
 
 use error::{Error, ReplyError};
-use lapin::options::BasicAckOptions;
+use lapin::options::{BasicAckOptions, BasicNackOptions};
 use serde::{Deserialize, Serialize};
 
 use uuid::Uuid;
@@ -49,6 +49,14 @@ where
 
     pub async fn ack(&self, multiple: bool) -> Result<()> {
         self.inner.ack(BasicAckOptions { multiple }).await?;
+        Ok(())
+    }
+
+    pub async fn nack(&self, multiple: bool, requeue: bool) -> Result<()> {
+        self.inner.nack(BasicNackOptions {
+            multiple,
+            requeue,
+        }).await?;
         Ok(())
     }
 }
