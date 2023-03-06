@@ -12,7 +12,7 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use crate::{delivery_uuid, Connection, Delivery, Result};
+use crate::{delivery_uuid, Connection, Delivery, Result, Bus};
 
 use super::{direct::DirectBus, Channel, Consumer, Publisher};
 
@@ -24,6 +24,28 @@ pub trait RpcBus: DirectBus {
 pub struct RpcChannel {
     inner: lapin::Channel,
     pending_replies: Arc<DashMap<Uuid, mpsc::UnboundedSender<lapin::message::Delivery>>>,
+}
+
+#[derive(Debug)]
+pub struct Reply<B>{
+    _marker: B
+}
+
+impl<B: RpcBus> Bus for Reply<B> {
+    type PublishPayload = B::ReplyPayload;
+}
+
+impl <B: RpcBus> DirectBus for Reply<B> {
+
+    type Args = B::Args;
+
+    fn queue(args: Self::Args) -> String {
+        B::queue(args)
+    }
+}
+
+impl <B: RpcBus> RpcBus for Reply<B> {
+    type ReplyPayload = B::PublishPayload;
 }
 
 impl RpcChannel {
@@ -163,7 +185,7 @@ where
         &self,
         args: A,
         payload: &P,
-    ) -> Result<impl Stream<Item = Delivery<B>>> {
+    ) -> Result<impl Stream<Item = Delivery<Reply<B>>>> {
         let correlation_uuid = Uuid::new_v4();
         let (tx, rx) = mpsc::unbounded_channel();
 
@@ -187,7 +209,7 @@ where
         &'r self,
         args: A,
         payload: &P,
-    ) -> Result<impl Future<Output = Option<Delivery<B>>>> {
+    ) -> Result<impl Future<Output = Option<Delivery<Reply<B>>>>> {
         let rx = self.publish_recv_many(args, payload).await?;
         Ok(async { rx.take(1).next().await })
     }

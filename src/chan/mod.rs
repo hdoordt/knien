@@ -85,7 +85,7 @@ mod tests {
 
     use crate::Bus;
 
-    pub const RABBIT_MQ_URL: &str = "amqp://tg:secret@localhost:5672";
+    pub const RABBIT_MQ_URL: &str = "amqp://tg:secret@localhost:5673";
 
     #[derive(Debug, Serialize, Deserialize)]
     pub struct FramePayload {

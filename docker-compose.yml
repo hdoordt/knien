@@ -6,7 +6,7 @@ services:
       RABBITMQ_DEFAULT_USER: tg
       RABBITMQ_DEFAULT_PASS: secret
       RABBITMQ_LOGS: /dev/null
-    ports: ["127.0.0.1:15672:15672", "127.0.0.1:5672:5672"]
+    ports: ["127.0.0.1:15673:15672", "127.0.0.1:5673:5672"]
     networks: [default]
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
