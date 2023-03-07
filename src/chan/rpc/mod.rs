@@ -12,9 +12,16 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use crate::{delivery_uuid, Bus, Connection, Delivery, Result};
+use crate::{
+    delivery_uuid,
+    error::{Error, ReplyError},
+    Bus, Connection, Delivery, Result,
+};
 
 use super::{direct::DirectBus, Channel, Consumer, Publisher};
+
+pub mod comm;
+pub use comm::*;
 
 pub trait RpcBus: DirectBus {
     type ReplyPayload;
@@ -28,7 +35,7 @@ pub struct RpcChannel {
 
 #[derive(Debug)]
 pub struct Reply<B> {
-    _marker: B,
+    _marker: PhantomData<B>,
 }
 
 impl<B: RpcBus> Bus for Reply<B> {
@@ -214,6 +221,29 @@ where
     }
 }
 
+impl<'p, 'r, B> Delivery<B>
+where
+    B: RpcBus,
+    B::PublishPayload: Deserialize<'p> + Serialize,
+    B::ReplyPayload: Deserialize<'r> + Serialize,
+{
+    pub async fn reply(&self, reply_payload: &B::ReplyPayload, chan: &impl Channel) -> Result<()> {
+        let Some(correlation_uuid) = self.get_uuid() else {
+            return Err(Error::Reply(ReplyError::NoCorrelationUuid));
+        };
+        let Some(reply_to) = self.inner.properties.reply_to().as_ref().map(|r | r.as_str()) else {
+            return Err(Error::Reply(ReplyError::NoReplyToConfigured))
+        };
+
+        let correlation_uuid = correlation_uuid?;
+
+        let bytes = serde_json::to_vec(reply_payload)?;
+
+        chan.publish_with_properties(&bytes, reply_to, Default::default(), correlation_uuid)
+            .await
+    }
+}
+
 #[pin_project(PinnedDrop)]
 struct ReplyReceiver<B> {
     #[pin]
@@ -225,11 +255,7 @@ struct ReplyReceiver<B> {
     _marker: PhantomData<B>,
 }
 
-impl<'d, B> Stream for ReplyReceiver<B>
-where
-    B: RpcBus,
-    B::ReplyPayload: Deserialize<'d> + Serialize,
-{
+impl<B> Stream for ReplyReceiver<B> {
     type Item = Delivery<B>;
 
     fn poll_next(

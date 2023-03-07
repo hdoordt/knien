@@ -65,19 +65,20 @@ pub struct Publisher<C, B> {
     _marker: PhantomData<B>,
 }
 
-impl<'p, C, B> Publisher<C, B>
+impl<C, B> Publisher<C, B>
 where
     C: Channel,
-    B: DirectBus,
-    B::PublishPayload: Deserialize<'p> + Serialize,
 {
-    async fn publish_with_properties(
+    async fn publish_with_properties<'p, P>(
         &self,
         routing_key: &str,
-        payload: &B::PublishPayload,
+        payload: &P,
         properties: BasicProperties,
         correlation_uuid: Uuid,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        P: Deserialize<'p> + Serialize,
+    {
         let bytes = serde_json::to_vec(payload)?;
         self.chan
             .publish_with_properties(&bytes, routing_key, properties, correlation_uuid)

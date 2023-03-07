@@ -114,8 +114,8 @@ impl<B> Display for RoutingKey<B> {
     }
 }
 
-struct Initial;
-struct NonEmpty;
+pub enum Initial {}
+pub enum NonEmpty {}
 
 pub struct RoutingKeyBuilder<B, I, S> {
     split: Split<'static, char>,
@@ -286,9 +286,9 @@ macro_rules! routing_key_builder {
 
 #[cfg(test)]
 mod tests {
-    use crate::{RoutingKeyBuilder, topic_bus, topic_exchange};
+    use crate::{topic_bus, topic_exchange, RoutingKeyBuilder};
 
-    topic_exchange!(MyExchange, "the_exchange");   
+    topic_exchange!(MyExchange, "the_exchange");
     topic_bus!(MyTopic, (), MyExchange, "this.is.a.topic");
 
     #[test]
