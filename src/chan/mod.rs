@@ -7,9 +7,7 @@ use pin_project::pin_project;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{Bus, Delivery, Result};
-
-use self::direct::DirectBus;
+use crate::{Delivery, Result};
 
 pub mod direct;
 pub mod rpc;
@@ -18,6 +16,10 @@ pub mod topic;
 pub use direct::*;
 pub use rpc::*;
 pub use topic::*;
+
+pub trait Bus {
+    type PublishPayload;
+}
 
 #[async_trait]
 pub trait Channel: Clone {
@@ -87,7 +89,7 @@ where
 mod tests {
     use serde::{Deserialize, Serialize};
 
-    use crate::Bus;
+    use crate::bus;
 
     pub const RABBIT_MQ_URL: &str = "amqp://tg:secret@localhost:5673";
 
@@ -96,9 +98,17 @@ mod tests {
         pub message: String,
     }
 
-    pub struct FrameBus;
+    bus!(FrameBus, FramePayload);
+}
 
-    impl Bus for FrameBus {
-        type PublishPayload = FramePayload;
-    }
+#[macro_export]
+macro_rules! bus {
+    ($name:ident, $publish_payload:ty) => {
+        #[derive(Debug)]
+        pub enum $name {}
+
+        impl $crate::Bus for $name {
+            type PublishPayload = $publish_payload;
+        }
+    };
 }

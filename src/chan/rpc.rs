@@ -263,12 +263,8 @@ mod tests {
     use uuid::Uuid;
 
     use crate::{
-        chan::{
-            rpc::{RpcBus, RpcChannel},
-            tests::{FrameBus, FramePayload, RABBIT_MQ_URL},
-            Consumer, Publisher,
-        },
-        Connection,
+        chan::tests::{FramePayload, RABBIT_MQ_URL},
+        rpc_bus, Connection, Consumer, Publisher, RpcChannel,
     };
 
     #[derive(Debug, Serialize, Deserialize)]
@@ -277,9 +273,10 @@ mod tests {
         Other,
     }
 
-    impl RpcBus for FrameBus {
-        type ReplyPayload = Result<(), FrameSendError>;
-    }
+    rpc_bus!(FrameBus, FramePayload, Result<(), FrameSendError>, u32, |args| format!(
+        "frame_{}",
+        args
+    ));
 
     #[tokio::test]
     async fn publish_recv_many() -> crate::Result<()> {
@@ -358,4 +355,15 @@ mod tests {
 
         Ok(())
     }
+}
+
+#[macro_export]
+macro_rules! rpc_bus {
+    ($bus:ident, $publish_payload:ty, $reply_payload:ty, $args:ty, $queue:expr) => {
+        $crate::direct_bus!($bus, $publish_payload, $args, $queue);
+
+        impl $crate::RpcBus for $bus {
+            type ReplyPayload = $reply_payload;
+        }
+    };
 }

@@ -14,10 +14,6 @@ pub use error::*;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-pub trait Bus {
-    type PublishPayload;
-}
-
 pub struct Connection {
     inner: lapin::Connection,
 }

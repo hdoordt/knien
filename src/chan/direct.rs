@@ -97,27 +97,19 @@ pub mod tests {
 
     use std::time::Duration;
 
-    use crate::{
-        chan::{
-            direct::DirectChannel,
-            tests::{FrameBus, FramePayload, RABBIT_MQ_URL},
-            Consumer, Publisher,
-        },
-        Connection,
-    };
     use futures::StreamExt;
     use tokio::{sync::oneshot, time::timeout};
     use uuid::Uuid;
 
-    use super::DirectBus;
+    use crate::{
+        chan::tests::{FramePayload, RABBIT_MQ_URL},
+        direct_bus, Connection, Consumer, DirectChannel, Publisher,
+    };
 
-    impl DirectBus for FrameBus {
-        type Args = u32;
-
-        fn queue(args: Self::Args) -> String {
-            format!("frame {}", args)
-        }
-    }
+    direct_bus!(FrameBus, FramePayload, u32, |args| format!(
+        "frame_{}",
+        args
+    ));
 
     #[tokio::test]
     async fn publish() -> crate::Result<()> {
@@ -154,4 +146,19 @@ pub mod tests {
 
         Ok(())
     }
+}
+
+#[macro_export]
+macro_rules! direct_bus {
+    ($bus:ident, $publish_payload:ty, $args:ty, $queue:expr) => {
+        $crate::bus!($bus, $publish_payload);
+
+        impl $crate::DirectBus for $bus {
+            type Args = $args;
+
+            fn queue(args: Self::Args) -> String {
+                ($queue)(args)
+            }
+        }
+    };
 }

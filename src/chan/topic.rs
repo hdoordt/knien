@@ -286,26 +286,10 @@ macro_rules! routing_key_builder {
 
 #[cfg(test)]
 mod tests {
-    use crate::{chan::topic::TopicBus, Bus};
+    use crate::{RoutingKeyBuilder, topic_bus, topic_exchange};
 
-    use super::{Exchange, RoutingKeyBuilder};
-
-    #[derive(Clone)]
-    enum MyExchange {}
-
-    impl Exchange for MyExchange {
-        const NAME: &'static str = "the_exchange";
-    }
-
-    #[derive(Debug)]
-    struct MyTopic;
-    impl Bus for MyTopic {
-        type PublishPayload = ();
-    }
-    impl TopicBus for MyTopic {
-        type Exchange = MyExchange;
-        const TOPIC: &'static str = "this.is.a.topic";
-    }
+    topic_exchange!(MyExchange, "the_exchange");   
+    topic_bus!(MyTopic, (), MyExchange, "this.is.a.topic");
 
     #[test]
     fn test_routing_key_builder() {
@@ -335,4 +319,28 @@ mod tests {
         let builder = builder + "this" + "is" + "a" + "topic";
         assert_eq!(builder.finish().key, "this.is.a.topic");
     }
+}
+
+#[macro_export]
+macro_rules! topic_exchange {
+    ($exchange:ident, $name:literal) => {
+        #[derive(Debug, Clone)]
+        pub enum $exchange {}
+
+        impl $crate::Exchange for $exchange {
+            const NAME: &'static str = $name;
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! topic_bus {
+    ($bus:ident, $publish_payload:ty, $exchange:ty, $topic:literal) => {
+        $crate::bus!($bus, $publish_payload);
+
+        impl $crate::TopicBus for $bus {
+            type Exchange = $exchange;
+            const TOPIC: &'static str = $topic;
+        }
+    };
 }
