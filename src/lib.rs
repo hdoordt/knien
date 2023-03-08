@@ -1,3 +1,4 @@
+#![doc = include_str!("../README.md")]
 use std::{fmt::Debug, marker::PhantomData, str::FromStr};
 
 use error::Error;

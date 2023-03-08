@@ -10,10 +10,12 @@ use uuid::Uuid;
 use crate::{Delivery, Result};
 
 pub mod direct;
+#[cfg(feature = "rpc")]
 pub mod rpc;
 pub mod topic;
 
 pub use direct::*;
+#[cfg(feature = "rpc")]
 pub use rpc::*;
 pub use topic::*;
 

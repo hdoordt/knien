@@ -98,7 +98,6 @@ impl<E: Exchange> Channel for TopicChannel<E> {
 }
 
 /// A Routing key that can be used to consume messages from a [TopicBus].
-/// See [RoutingKeyBuilder].
 #[derive(Debug)]
 pub struct RoutingKey<B> {
     key: String,

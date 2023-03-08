@@ -1,13 +1,14 @@
 use std::fmt::Display;
 
-use crate::{ReplyError, RoutingKeyError};
+use crate::RoutingKeyError;
 
 #[derive(Debug)]
 pub enum Error {
     Mq(lapin::Error),
     Serde(serde_json::Error),
     Uuid(uuid::Error),
-    Reply(ReplyError),
+    #[cfg(feature = "rpc")]
+    Reply(crate::ReplyError),
     RoutingKey(RoutingKeyError),
 }
 
@@ -35,6 +36,7 @@ impl Display for Error {
             Error::Mq(e) => write!(f, "Rabbit MQ error: {e}"),
             Error::Serde(e) => write!(f, "(De)serialization error {e}"),
             Error::Uuid(e) => write!(f, "UUID error: {e}"),
+            #[cfg(feature = "rpc")]
             Error::Reply(e) => write!(f, "Reply error: {e}"),
             Error::RoutingKey(e) => write!(f, "Error creating routing key: {e}"),
         }
