@@ -157,6 +157,7 @@ macro_rules! direct_bus {
             type Args = $args;
 
             fn queue(args: Self::Args) -> String {
+                #[allow(clippy::redundant_closure_call)]
                 ($queue)(args)
             }
         }

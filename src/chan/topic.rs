@@ -1,11 +1,8 @@
 use std::fmt::Display;
-use std::iter::empty;
-use std::iter::once;
-use std::iter::Empty;
 use std::marker::PhantomData;
-use std::str::Split;
 
 use async_trait::async_trait;
+use regex::Regex;
 use uuid::Uuid;
 
 use crate::Bus;
@@ -108,216 +105,96 @@ pub struct RoutingKey<B> {
     _marker: PhantomData<B>,
 }
 
+impl<B: TopicBus> TryFrom<String> for RoutingKey<B> {
+    type Error = RoutingKeyError;
+
+    fn try_from(key: String) -> std::result::Result<Self, Self::Error> {
+        if key.contains("**") || key.contains("##") {
+            return Err(RoutingKeyError::InvalidKey(key, B::TOPIC));
+        }
+        let regex = key
+            .replace('.', r#"\."#)
+            .replace('*', r#"(.*)"#)
+            .replace(r"\.#", r#"\.(.*)"#)
+            .replace(r"#\.", r#"(.*)\."#);
+
+        let regex = Regex::new(&format!("^{regex}$")).unwrap();
+        if !regex.is_match(B::TOPIC) {
+            return Err(RoutingKeyError::InvalidKey(key, B::TOPIC));
+        }
+
+        Ok(Self {
+            key,
+            _marker: PhantomData,
+        })
+    }
+}
+
 impl<B> Display for RoutingKey<B> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.key.fmt(f)
     }
 }
 
-pub enum Initial {}
-pub enum NonEmpty {}
-
-pub struct RoutingKeyBuilder<B, I, S> {
-    split: Split<'static, char>,
-    iter: I,
-    _state: PhantomData<S>,
-    _marker: PhantomData<B>,
+#[derive(Debug)]
+pub enum RoutingKeyError {
+    InvalidKey(String, &'static str),
+    InvalidPart(String, usize, &'static str),
+    TooLong(usize, &'static str),
 }
 
-impl<B: TopicBus> Default for RoutingKeyBuilder<B, Empty<&'static str>, Initial> {
-    fn default() -> Self {
-        Self::new()
+impl Display for RoutingKeyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RoutingKeyError::InvalidKey(key, topic) => {
+                write!(f, "Routing key {key} is not valid for topic {topic}")
+            }
+            RoutingKeyError::InvalidPart(part, pos, topic) => {
+                write!(
+                    f,
+                    "Invalid routing key part '{part}' for topic '{topic}' on position {pos}"
+                )
+            }
+            RoutingKeyError::TooLong(len, topic) => {
+                let expected_len = topic.split('c').count();
+                write!(f, "Invalid routing key length for topic {topic}. Expected {expected_len}, got {len}")
+            }
+        }
     }
 }
 
-impl<B: TopicBus> RoutingKeyBuilder<B, Empty<&'static str>, Initial> {
-    pub fn new() -> Self {
-        Self {
-            split: B::TOPIC.split('.'),
-            iter: empty(),
-            _state: PhantomData,
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl<B: TopicBus, I: Iterator<Item = &'static str>, S> RoutingKeyBuilder<B, I, S> {
-    pub fn finish(self) -> RoutingKey<B> {
-        let RoutingKeyBuilder { iter, _marker, .. } = self;
-        let key = String::from_iter(iter);
-        RoutingKey { key, _marker }
-    }
-}
-
-macro_rules! impl_routing_key_builder {
-    ($state:ty, $delim:expr) => {
-        impl<B: TopicBus, I: Iterator<Item = &'static str>> RoutingKeyBuilder<B, I, $state> {
-            pub fn word(
-                self,
-            ) -> RoutingKeyBuilder<B, impl Iterator<Item = &'static str>, NonEmpty> {
-                let RoutingKeyBuilder {
-                    mut split,
-                    iter,
-                    _marker,
-                    ..
-                } = self;
-                let iter = iter.chain($delim).chain(split.next());
-                RoutingKeyBuilder {
-                    split,
-                    iter,
-                    _state: PhantomData,
-                    _marker,
-                }
-            }
-
-            pub fn star(
-                self,
-            ) -> RoutingKeyBuilder<B, impl Iterator<Item = &'static str>, NonEmpty> {
-                let RoutingKeyBuilder {
-                    mut split,
-                    iter,
-                    _marker,
-                    ..
-                } = self;
-                let iter = iter.chain($delim).chain(once("*"));
-                split.next();
-
-                RoutingKeyBuilder {
-                    split,
-                    iter,
-                    _state: PhantomData,
-                    _marker,
-                }
-            }
-
-            pub fn hash(
-                self,
-            ) -> RoutingKeyBuilder<B, impl Iterator<Item = &'static str>, NonEmpty> {
-                let RoutingKeyBuilder {
-                    mut split,
-                    iter,
-                    _marker,
-                    ..
-                } = self;
-                let iter = iter.chain($delim).chain(once("#"));
-                split.next();
-
-                RoutingKeyBuilder {
-                    split,
-                    iter,
-                    _state: PhantomData,
-                    _marker,
-                }
-            }
-        }
-
-        impl<B: TopicBus + 'static, I: Iterator<Item = &'static str> + 'static>
-            std::ops::Add<&'static str> for RoutingKeyBuilder<B, I, $state>
-        {
-            type Output = RoutingKeyBuilder<B, Box<dyn Iterator<Item = &'static str>>, NonEmpty>;
-
-            fn add(self, rhs: &'static str) -> Self::Output {
-                match rhs {
-                    "*" => {
-                        let RoutingKeyBuilder {
-                            split,
-                            iter,
-                            _marker,
-                            ..
-                        } = self.star();
-                        RoutingKeyBuilder {
-                            split,
-                            // TODO: Not a big fan of this allocation
-                            iter: Box::new(iter),
-                            _state: PhantomData,
-                            _marker,
-                        }
-                    }
-                    "#" => {
-                        let RoutingKeyBuilder {
-                            split,
-                            iter,
-                            _marker,
-                            ..
-                        } = self.hash();
-                        RoutingKeyBuilder {
-                            split,
-                            // TODO: Not a big fan of this allocation
-                            iter: Box::new(iter),
-                            _state: PhantomData,
-                            _marker,
-                        }
-                    }
-                    word => {
-                        let RoutingKeyBuilder {
-                            mut split,
-                            iter,
-                            _marker,
-                            ..
-                        } = self;
-                        let next = split.next().unwrap();
-                        assert_eq!(
-                            next, word,
-                            "Invalid routing key part. Expected {next}, got {word}"
-                        );
-                        let iter = iter.chain($delim).chain(once(next));
-                        RoutingKeyBuilder {
-                            split,
-                            iter: Box::new(iter),
-                            _state: PhantomData,
-                            _marker,
-                        }
-                    }
-                }
-            }
-        }
-    };
-}
-
-impl_routing_key_builder!(Initial, empty());
-impl_routing_key_builder!(NonEmpty, once("."));
-
-#[macro_export]
-macro_rules! routing_key_builder {
-    ($bus:ty) => {
-        $crate::RoutingKeyBuilder::<FrameForDis, _, _>::new()
-    };
-}
+impl std::error::Error for RoutingKeyError {}
 
 #[cfg(test)]
 mod tests {
-    use crate::{topic_bus, topic_exchange, RoutingKeyBuilder};
+    use crate::{topic_bus, topic_exchange, RoutingKey};
 
     topic_exchange!(MyExchange, "the_exchange");
     topic_bus!(MyTopic, (), MyExchange, "this.is.a.topic");
 
     #[test]
-    fn test_routing_key_builder() {
-        let builder: RoutingKeyBuilder<MyTopic, _, _> = RoutingKeyBuilder::new();
-        assert_eq!(builder.finish().key, "");
+    fn test_routing_key() {
+        // Valid cases
+        RoutingKey::<MyTopic>::try_from("this.*".to_owned()).unwrap();
+        RoutingKey::<MyTopic>::try_from("this.*.a.*".to_owned()).unwrap();
+        RoutingKey::<MyTopic>::try_from("this.*.a.#".to_owned()).unwrap();
+        RoutingKey::<MyTopic>::try_from("this.is.a.topic".to_owned()).unwrap();
+        RoutingKey::<MyTopic>::try_from("*.is.a.topic".to_owned()).unwrap();
+        RoutingKey::<MyTopic>::try_from("*.*.a.topic".to_owned()).unwrap();
+        RoutingKey::<MyTopic>::try_from("#.a.topic".to_owned()).unwrap();
 
-        let builder: RoutingKeyBuilder<MyTopic, _, _> = RoutingKeyBuilder::new();
-        assert_eq!(builder.word().finish().key, "this");
-
-        let builder: RoutingKeyBuilder<MyTopic, _, _> = RoutingKeyBuilder::new();
-        assert_eq!(builder.word().star().finish().key, "this.*");
-
-        let builder: RoutingKeyBuilder<MyTopic, _, _> = RoutingKeyBuilder::new();
-        assert_eq!(builder.word().star().word().finish().key, "this.*.a");
-
-        let builder: RoutingKeyBuilder<MyTopic, _, _> = RoutingKeyBuilder::new();
-        assert_eq!(
-            builder.word().star().word().hash().finish().key,
-            "this.*.a.#"
-        );
-
-        let builder: RoutingKeyBuilder<MyTopic, _, _> = RoutingKeyBuilder::new();
-        let builder = builder + "this" + "*" + "a" + "#";
-        assert_eq!(builder.finish().key, "this.*.a.#");
-
-        let builder: RoutingKeyBuilder<MyTopic, _, _> = RoutingKeyBuilder::new();
-        let builder = builder + "this" + "is" + "a" + "topic";
-        assert_eq!(builder.finish().key, "this.is.a.topic");
+        // Invalid cases
+        RoutingKey::<MyTopic>::try_from("this".to_owned()).unwrap_err(); // Too short
+        RoutingKey::<MyTopic>::try_from("this.is".to_owned()).unwrap_err(); // Too short
+        RoutingKey::<MyTopic>::try_from("that".to_owned()).unwrap_err(); // Invalid word
+        RoutingKey::<MyTopic>::try_from("this.is.a.topic.that.is.too.long".to_owned()).unwrap_err(); // Too long
+        RoutingKey::<MyTopic>::try_from("this.**".to_owned()).unwrap_err(); // Double *
+        RoutingKey::<MyTopic>::try_from("this.**.is".to_owned()).unwrap_err(); // Double *
+        RoutingKey::<MyTopic>::try_from("this.##.is".to_owned()).unwrap_err(); // Double #
+        RoutingKey::<MyTopic>::try_from("##".to_owned()).unwrap_err(); // Double #
+        RoutingKey::<MyTopic>::try_from("this.is.a.topic.*".to_owned()).unwrap_err(); // Too long
+        RoutingKey::<MyTopic>::try_from("this.is.a.topic.#".to_owned()).unwrap_err();
+        // Too long
     }
 }
 

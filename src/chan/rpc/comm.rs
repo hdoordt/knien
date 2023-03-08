@@ -181,6 +181,7 @@ macro_rules! rpc_comm_bus {
             type Args = $args;
 
             fn queue(args: Self::Args) -> String {
+                #[allow(clippy::redundant_closure_call)]
                 ($queue)(args)
             }
         }

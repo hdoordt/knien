@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, sync::Arc, task::Poll};
+use std::{fmt::Display, marker::PhantomData, sync::Arc, task::Poll};
 
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -12,11 +12,7 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use crate::{
-    delivery_uuid,
-    error::{Error, ReplyError},
-    Bus, Connection, Delivery, Result,
-};
+use crate::{delivery_uuid, error::Error, Bus, Connection, Delivery, Result};
 
 use super::{direct::DirectBus, Channel, Consumer, Publisher};
 
@@ -277,6 +273,27 @@ impl<T> PinnedDrop for ReplyReceiver<T> {
         task::spawn_blocking(move || chan.remove_pending_reply(&correlation_uuid));
     }
 }
+
+#[derive(Debug)]
+pub enum ReplyError {
+    NoCorrelationUuid,
+    NoReplyToConfigured,
+}
+
+impl Display for ReplyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReplyError::NoCorrelationUuid => {
+                write!(f, "No correlation Uuid configured for the message")
+            }
+            ReplyError::NoReplyToConfigured => {
+                write!(f, "No value configured for the reply-to field")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ReplyError {}
 
 #[cfg(test)]
 mod tests {
