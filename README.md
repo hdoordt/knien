@@ -1,5 +1,7 @@
 # Knien
 
+[![crates.io](https://img.shields.io/crates/v/knien.svg)](https://crates.io/crates/knien) [![Documentation](https://docs.rs/knien/badge.svg)](https://docs.rs/knien)
+
 Typed RabbitMQ interfacing for `async` Rust.
 
 This crate defines several types of channels for interfacing with RabbitMQ in various ways:
