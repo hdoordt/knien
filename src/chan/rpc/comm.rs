@@ -12,14 +12,23 @@ use crate::{
 
 use super::ReplyReceiver;
 
+/// An RPC-based communication bus that defines an `InitialPayload`,
+/// a `BackPayload` and `ForthPayload`, and supports flows where a single
+/// initial message is sent, after which back-and-forth a communication
+/// over which multiple messages can be sent is setup.
 pub trait RpcCommBus {
+    /// The arguments used to format the queue
     type Args;
 
+    /// Method with which queue names are built
     fn queue(args: Self::Args) -> String;
 
+    /// The type of payload of the message that is initally sent onto the bus
     type InitialPayload;
 
+    /// The type of payload of the messages that the receiver of the initial message sends back
     type BackPayload;
+    /// The type of payload of the messages that the initiator of the communication sends forth
     type ForthPayload;
 }
 
@@ -36,9 +45,11 @@ impl<B: RpcCommBus> DirectBus for B {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[doc(hidden)]
 pub enum Never {}
 
 #[derive(Debug)]
+/// A reply on an [RpcCommBus].
 pub struct CommReply<B> {
     _marker: PhantomData<B>,
 }
@@ -58,6 +69,7 @@ impl<B: RpcCommBus> RpcCommBus for CommReply<B> {
 }
 
 impl RpcChannel {
+    /// Setup a new [Publisher] associated wit the [RpcCommBus].
     pub fn comm_publisher<B: RpcCommBus>(&self) -> Publisher<Self, B> {
         Publisher {
             chan: self.clone(),
@@ -73,6 +85,9 @@ where
     B::ForthPayload: Deserialize<'r> + Serialize,
     B: RpcCommBus,
 {
+    /// Publish an initial message onto the [RpcCommBus], and receive the replies with
+    /// with [RpcCommBus::BackPayload] payloads onto the returned [Stream].
+    /// The replies can be obtained by calling [futures::StreamExt::next] on the returned [Stream].
     pub async fn publish_recv_comm(
         &self,
         args: B::Args,
@@ -104,6 +119,7 @@ where
     B::BackPayload: Deserialize<'b> + Serialize,
     B::ForthPayload: Deserialize<'f> + Serialize,
 {
+    /// Reply to a message that was sent by the receiver of the initial message.
     pub async fn reply_forth(
         &self,
         back_payload: &B::ForthPayload,
@@ -124,6 +140,9 @@ where
             .await
     }
 
+    /// Reply to a message that was sent by the receiver of the initial message and await
+    /// any further messages from the receiver. 
+    /// The messages can be obtained by calling [futures::StreamExt::next] on the returned [Stream].
     pub async fn reply_recv_many(
         &self,
         back_payload: &B::BackPayload,
@@ -160,7 +179,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::{chan::tests::FramePayload, rpc::tests::FrameSendError, rpc_comm_bus};
+    use crate::{chan::tests::FramePayload, rpc_comm_bus, FrameSendError};
 
     rpc_comm_bus!(FrameCommBus, FramePayload, FramePayload, Result<(), FrameSendError>, u32, |args| format!(
         "frame_comm_{}",
@@ -169,6 +188,7 @@ mod tests {
 }
 
 #[macro_export]
+/// Declare a new [RpcCommBus].
 macro_rules! rpc_comm_bus {
     ($bus:ident, $initial_payload:ty, $back_payload:ty, $forth_payload:ty, $args:ty, $queue:expr) => {
         #[derive(Debug)]

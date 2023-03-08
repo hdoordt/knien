@@ -16,20 +16,27 @@ use crate::{delivery_uuid, error::Error, Bus, Connection, Delivery, Result};
 
 use super::{direct::DirectBus, Channel, Consumer, Publisher};
 
-pub mod comm;
+mod comm;
 pub use comm::*;
 
+/// A bus that allows publishing messages on a direct queue,
+/// as well as replying to them.
 pub trait RpcBus: DirectBus {
+    /// The type of payload of the replies of messages published on this bus.
     type ReplyPayload;
 }
 
 #[derive(Clone)]
+/// A channel for publishing messages on direct queues, allowing for receiving replies using [RpcBus].
+/// It also supports publishing an initial message on a direct queue, and setting
+/// up a back-and-forth communincation channel using [RpcCommBus].
 pub struct RpcChannel {
     inner: lapin::Channel,
     pending_replies: Arc<DashMap<Uuid, mpsc::UnboundedSender<lapin::message::Delivery>>>,
 }
 
 #[derive(Debug)]
+/// A reply to a [Delivery] that was sent onto a [RpcBus]
 pub struct Reply<B> {
     _marker: PhantomData<B>,
 }
@@ -51,6 +58,10 @@ impl<B: RpcBus> RpcBus for Reply<B> {
 }
 
 impl RpcChannel {
+    /// Create a new [RpcChannel], and start listening for replies
+    /// that are associated with the messages sent by a [Publisher] associated
+    /// with this [RpcChannel]. Any incoming replies are forwarded to the [Future]s
+    /// that correspond the the message correlation [Uuid].
     pub async fn new(connection: &Connection) -> Result<RpcChannel> {
         let chan = connection.inner.create_channel().await?;
 
@@ -129,6 +140,9 @@ impl RpcChannel {
         self.pending_replies.remove(correlation_uuid);
     }
 
+    /// Create a new [Consumer] for the [RpcBus] that declares
+    /// a direct queue with the name produced by [DirectBus::queue]
+    /// given the passed [DirectBus::Args]
     pub async fn consumer<B: RpcBus>(
         &self,
         args: B::Args,
@@ -150,6 +164,7 @@ impl RpcChannel {
         })
     }
 
+    /// Create a new [Publisher] that allows for publishing on the [RpcBus]
     pub fn publisher<B: RpcBus>(&self) -> Publisher<Self, B> {
         Publisher {
             chan: self.clone(),
@@ -162,7 +177,7 @@ impl RpcChannel {
 impl Channel for RpcChannel {
     async fn publish_with_properties(
         &self,
-        bytes: &[u8],
+        payload_bytes: &[u8],
         routing_key: &str,
         properties: lapin::BasicProperties,
         correlation_uuid: Uuid,
@@ -170,7 +185,13 @@ impl Channel for RpcChannel {
         let properties = properties.with_correlation_id(correlation_uuid.to_string().into());
 
         self.inner
-            .basic_publish("", routing_key, Default::default(), bytes, properties)
+            .basic_publish(
+                "",
+                routing_key,
+                Default::default(),
+                payload_bytes,
+                properties,
+            )
             .await?;
 
         Ok(())
@@ -183,6 +204,8 @@ where
     B::ReplyPayload: Deserialize<'r> + Serialize,
     B: RpcBus,
 {
+    /// Publish a message and await many replies. The replies
+    /// can be obtained by calling [StreamExt::next] on the returned [Stream].
     pub async fn publish_recv_many(
         &self,
         args: B::Args,
@@ -207,6 +230,8 @@ where
         Ok(rx)
     }
 
+    /// Publish a message and await a single reply. The reply
+    /// can be obtained by awaiting the retured [Future].
     pub async fn publish_recv_one(
         &'r self,
         args: B::Args,
@@ -223,6 +248,7 @@ where
     B::PublishPayload: Deserialize<'p> + Serialize,
     B::ReplyPayload: Deserialize<'r> + Serialize,
 {
+    /// Reply to a [Delivery].
     pub async fn reply(&self, reply_payload: &B::ReplyPayload, chan: &impl Channel) -> Result<()> {
         let Some(correlation_uuid) = self.get_uuid() else {
             return Err(Error::Reply(ReplyError::NoCorrelationUuid));
@@ -275,8 +301,12 @@ impl<T> PinnedDrop for ReplyReceiver<T> {
 }
 
 #[derive(Debug)]
+/// Error replying to a message. These errors should not occur
+/// if only [knien](crate)-based application interact with the RabbitMQ broker
 pub enum ReplyError {
+    /// No Correlation [Uuid] provided for the [Delivery]
     NoCorrelationUuid,
+    /// No `reply-to` property was configured for the [Delivery]
     NoReplyToConfigured,
 }
 
@@ -294,6 +324,9 @@ impl Display for ReplyError {
 }
 
 impl std::error::Error for ReplyError {}
+
+#[cfg(test)]
+pub use tests::*;
 
 #[cfg(test)]
 mod tests {
@@ -401,12 +434,16 @@ mod tests {
 }
 
 #[macro_export]
+/// Declare a new [RpcBus].
 macro_rules! rpc_bus {
-    ($bus:ident, $publish_payload:ty, $reply_payload:ty, $args:ty, $queue:expr) => {
-        $crate::direct_bus!($bus, $publish_payload, $args, $queue);
+    ($bus:ident, $publish_payload:ty, $reply_payload:ty, $args:ty, $queue:expr, $doc:literal) => {
+        $crate::direct_bus!($bus, $publish_payload, $args, $queue, $doc);
 
         impl $crate::RpcBus for $bus {
             type ReplyPayload = $reply_payload;
         }
+    };
+    ($bus:ident, $publish_payload:ty, $reply_payload:ty, $args:ty, $queue:expr) => {
+        $crate::rpc_bus!($bus, $publish_payload, $reply_payload, $args, $queue, "");
     };
 }

@@ -9,31 +9,38 @@ use uuid::Uuid;
 
 use crate::{Delivery, Result};
 
-pub mod direct;
+mod direct;
 #[cfg(feature = "rpc")]
-pub mod rpc;
-pub mod topic;
+mod rpc;
+mod topic;
 
 pub use direct::*;
 #[cfg(feature = "rpc")]
 pub use rpc::*;
 pub use topic::*;
 
+/// A Bus. Base trait for several other buses
 pub trait Bus {
+    /// The type of payload of the messages that are published on or consumed from it.
     type PublishPayload;
 }
 
 #[async_trait]
+/// A RrabbitMQ channel
 pub trait Channel: Clone {
+    /// Publish a message onto a queue
     async fn publish_with_properties(
         &self,
-        bytes: &[u8],
+        payload_bytes: &[u8],
         routing_key: &str,
         properties: BasicProperties,
         correlation_uuid: Uuid,
     ) -> Result<()>;
 }
 
+/// A consumer associated with a [Channel] and a [Bus].
+/// [Consumer]s implement [futures::Stream], yielding [Delivery]s
+/// that are associated with the [Bus].
 #[pin_project]
 pub struct Consumer<C, B> {
     chan: C,
@@ -62,6 +69,10 @@ where
     }
 }
 
+/// A publisher associated with a [Channel] and a [Bus].
+/// [Publisher]s allow for publishing messages with payloads
+/// of the [Bus::PublishPayload] type. [Publisher]s take care
+/// of serializing the payloads before publishing.
 pub struct Publisher<C, B> {
     chan: C,
     _marker: PhantomData<B>,
@@ -89,6 +100,9 @@ where
 }
 
 #[cfg(test)]
+pub use tests::*;
+
+#[cfg(test)]
 mod tests {
     use serde::{Deserialize, Serialize};
 
@@ -104,14 +118,19 @@ mod tests {
     bus!(FrameBus, FramePayload);
 }
 
+#[doc(hidden)]
 #[macro_export]
 macro_rules! bus {
-    ($name:ident, $publish_payload:ty) => {
+    ($name:ident, $publish_payload:ty, $doc:literal) => {
         #[derive(Debug)]
+        #[doc = $doc]
         pub enum $name {}
 
         impl $crate::Bus for $name {
             type PublishPayload = $publish_payload;
         }
+    };
+    ($name:ident, $publish_payload:ty) => {
+        $crate::bus!($name, $publish_payload, "");
     };
 }

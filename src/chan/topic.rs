@@ -5,30 +5,34 @@ use async_trait::async_trait;
 use regex::Regex;
 use uuid::Uuid;
 
-use crate::Bus;
-use crate::Connection;
-use crate::Result;
+use crate::{Bus, Channel, Connection, Consumer, Publisher, Result};
 
-use super::Channel;
-use super::Consumer;
-use super::Publisher;
-
-pub trait Exchange: Clone + Send + Sync {
+/// A Topic Exchange
+pub trait TopicExchange: Clone + Send + Sync {
+    /// The name of the Topic Exchange
     const NAME: &'static str;
 }
 
+/// A bus that is associated with a [TopicExchange], and defines a
+/// pattern of topics onto which messages can be publised and consumed
 pub trait TopicBus: Bus {
-    type Exchange;
-    const TOPIC: &'static str;
+    /// The Topic Exchange this bus is associated with
+    type Exchange: TopicExchange;
+    /// The pattern of the topic that this bus publishes to or consumes from
+    /// May contain `*`
+    const TOPIC_PATTERN: &'static str;
 }
 
 #[derive(Clone)]
+/// A Topic Channel associated with a [TopicExchange].
 pub struct TopicChannel<E> {
     inner: lapin::Channel,
     _marker: PhantomData<E>,
 }
 
-impl<E: Exchange> TopicChannel<E> {
+impl<E: TopicExchange> TopicChannel<E> {
+    /// Create a new [TopicChannel], declaring the Topic Exchange
+    /// this channel is associated with.
     pub async fn new(connection: &Connection) -> Result<Self> {
         let chan = connection.inner.create_channel().await?;
         chan.exchange_declare(
@@ -45,6 +49,8 @@ impl<E: Exchange> TopicChannel<E> {
         })
     }
 
+    /// Create a new [Consumer] for the topic bus that consumes
+    /// messages with routing keys matching the passed [RoutingKey].
     pub async fn consumer<B: TopicBus>(
         &self,
         routing_key: RoutingKey<B>,
@@ -70,6 +76,7 @@ impl<E: Exchange> TopicChannel<E> {
         })
     }
 
+    /// Create a new [Publisher] that publishes onto the [TopicBus].
     pub fn publisher<B: TopicBus>(&self) -> Publisher<Self, B> {
         Publisher {
             chan: self.clone(),
@@ -79,10 +86,10 @@ impl<E: Exchange> TopicChannel<E> {
 }
 
 #[async_trait]
-impl<E: Exchange> Channel for TopicChannel<E> {
+impl<E: TopicExchange> Channel for TopicChannel<E> {
     async fn publish_with_properties(
         &self,
-        bytes: &[u8],
+        payload_bytes: &[u8],
         routing_key: &str,
         properties: lapin::BasicProperties,
         correlation_uuid: Uuid,
@@ -90,7 +97,13 @@ impl<E: Exchange> Channel for TopicChannel<E> {
         let properties = properties.with_correlation_id(correlation_uuid.to_string().into());
 
         self.inner
-            .basic_publish(E::NAME, routing_key, Default::default(), bytes, properties)
+            .basic_publish(
+                E::NAME,
+                routing_key,
+                Default::default(),
+                payload_bytes,
+                properties,
+            )
             .await?;
 
         Ok(())
@@ -108,18 +121,22 @@ impl<B: TopicBus> TryFrom<String> for RoutingKey<B> {
     type Error = RoutingKeyError;
 
     fn try_from(key: String) -> std::result::Result<Self, Self::Error> {
-        if key.contains("**") || key.contains("##") {
-            return Err(RoutingKeyError::InvalidKey(key, B::TOPIC));
+        if key.contains("**")
+            || key.contains("##")
+            || key.contains("..")
+            || key.starts_with('.')
+            || key.ends_with('.')
+        {
+            return Err(RoutingKeyError::InvalidKey(key, B::TOPIC_PATTERN));
         }
         let regex = key
             .replace('.', r#"\."#)
             .replace('*', r#"(.*)"#)
-            .replace(r"\.#", r#"\.(.*)"#)
-            .replace(r"#\.", r#"(.*)\."#);
+            .replace('#', r#"(.*)"#);
 
         let regex = Regex::new(&format!("^{regex}$")).unwrap();
-        if !regex.is_match(B::TOPIC) {
-            return Err(RoutingKeyError::InvalidKey(key, B::TOPIC));
+        if !regex.is_match(B::TOPIC_PATTERN) {
+            return Err(RoutingKeyError::InvalidKey(key, B::TOPIC_PATTERN));
         }
 
         Ok(Self {
@@ -136,10 +153,10 @@ impl<B> Display for RoutingKey<B> {
 }
 
 #[derive(Debug)]
+/// Error indicating what went wrong in setting up a [RoutingKey]
 pub enum RoutingKeyError {
+    /// Got a key that does not match the topic pattern associated with the [TopicBus].
     InvalidKey(String, &'static str),
-    InvalidPart(String, usize, &'static str),
-    TooLong(usize, &'static str),
 }
 
 impl Display for RoutingKeyError {
@@ -147,16 +164,6 @@ impl Display for RoutingKeyError {
         match self {
             RoutingKeyError::InvalidKey(key, topic) => {
                 write!(f, "Routing key {key} is not valid for topic {topic}")
-            }
-            RoutingKeyError::InvalidPart(part, pos, topic) => {
-                write!(
-                    f,
-                    "Invalid routing key part '{part}' for topic '{topic}' on position {pos}"
-                )
-            }
-            RoutingKeyError::TooLong(len, topic) => {
-                let expected_len = topic.split('c').count();
-                write!(f, "Invalid routing key length for topic {topic}. Expected {expected_len}, got {len}")
             }
         }
     }
@@ -181,11 +188,13 @@ mod tests {
         RoutingKey::<MyTopic>::try_from("*.is.a.topic".to_owned()).unwrap();
         RoutingKey::<MyTopic>::try_from("*.*.a.topic".to_owned()).unwrap();
         RoutingKey::<MyTopic>::try_from("#.a.topic".to_owned()).unwrap();
+        RoutingKey::<MyTopic>::try_from("#".to_owned()).unwrap();
 
         // Invalid cases
         RoutingKey::<MyTopic>::try_from("this".to_owned()).unwrap_err(); // Too short
         RoutingKey::<MyTopic>::try_from("this.is".to_owned()).unwrap_err(); // Too short
-        RoutingKey::<MyTopic>::try_from("that".to_owned()).unwrap_err(); // Invalid word
+        RoutingKey::<MyTopic>::try_from("that.*".to_owned()).unwrap_err(); // Invalid word
+        RoutingKey::<MyTopic>::try_from("and.this.is.a.topic".to_owned()).unwrap_err(); // Invalid word
         RoutingKey::<MyTopic>::try_from("this.is.a.topic.that.is.too.long".to_owned()).unwrap_err(); // Too long
         RoutingKey::<MyTopic>::try_from("this.**".to_owned()).unwrap_err(); // Double *
         RoutingKey::<MyTopic>::try_from("this.**.is".to_owned()).unwrap_err(); // Double *
@@ -198,25 +207,27 @@ mod tests {
 }
 
 #[macro_export]
+/// Declare a new [TopicExchange], specifying its type identifier and name.
 macro_rules! topic_exchange {
     ($exchange:ident, $name:literal) => {
         #[derive(Debug, Clone)]
         pub enum $exchange {}
 
-        impl $crate::Exchange for $exchange {
+        impl $crate::TopicExchange for $exchange {
             const NAME: &'static str = $name;
         }
     };
 }
 
 #[macro_export]
+/// Declare a new [TopicBus].
 macro_rules! topic_bus {
     ($bus:ident, $publish_payload:ty, $exchange:ty, $topic:literal) => {
         $crate::bus!($bus, $publish_payload);
 
         impl $crate::TopicBus for $bus {
             type Exchange = $exchange;
-            const TOPIC: &'static str = $topic;
+            const TOPIC_PATTERN: &'static str = $topic;
         }
     };
 }

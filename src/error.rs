@@ -3,12 +3,18 @@ use std::fmt::Display;
 use crate::RoutingKeyError;
 
 #[derive(Debug)]
+/// This type represents anything that can go wrong when interacting with [knien](crate).
 pub enum Error {
+    /// A low-level error concerning RabbitMq
     Mq(lapin::Error),
+    /// A (de)serialization error
     Serde(serde_json::Error),
+    /// Error validating a [uuid::Uuid]
     Uuid(uuid::Error),
     #[cfg(feature = "rpc")]
+    /// Error involving replying to a [crate::Delivery]
     Reply(crate::ReplyError),
+    /// Error validating a [crate::RoutingKey]
     RoutingKey(RoutingKeyError),
 }
 
