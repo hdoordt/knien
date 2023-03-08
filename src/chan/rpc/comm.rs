@@ -141,7 +141,7 @@ where
     }
 
     /// Reply to a message that was sent by the receiver of the initial message and await
-    /// any further messages from the receiver. 
+    /// any further messages from the receiver.
     /// The messages can be obtained by calling [futures::StreamExt::next] on the returned [Stream].
     pub async fn reply_recv_many(
         &self,
@@ -190,7 +190,8 @@ mod tests {
 #[macro_export]
 /// Declare a new [RpcCommBus].
 macro_rules! rpc_comm_bus {
-    ($bus:ident, $initial_payload:ty, $back_payload:ty, $forth_payload:ty, $args:ty, $queue:expr) => {
+    ($doc:literal, $bus:ident, $initial_payload:ty, $back_payload:ty, $forth_payload:ty, $args:ty, $queue:expr) => {
+        #[doc = $doc]
         #[derive(Debug)]
         pub enum $bus {}
 
@@ -205,5 +206,37 @@ macro_rules! rpc_comm_bus {
                 ($queue)(args)
             }
         }
+    };
+    (doc = $doc:literal, bus = $bus:ident, initial = $initial_payload:ty, back = $back_payload:ty, forth = $forth_payload:ty, args = $args:ty, queue = $queue:expr) => {
+        $crate::rpc_comm_bus!(
+            $doc,
+            $bus,
+            $initial_payload,
+            $back_payload,
+            $forth_payload,
+            $args,
+            $queue
+        );
+    };
+    ($bus:ident, $initial_payload:ty, $back_payload:ty, $forth_payload:ty, $args:ty, $queue:expr) => {
+        $crate::rpc_comm_bus!(
+            "",
+            $bus,
+            $initial_payload,
+            $back_payload,
+            $forth_payload,
+            $args,
+            $queue
+        );
+    };
+    (bus = $bus:ident, initial = $initial_payload:ty, back = $back_payload:ty, forth = $forth_payload:ty, args = $args:ty, queue = $queue:expr) => {
+        $crate::rpc_comm_bus!(
+            $bus,
+            $initial_payload,
+            $back_payload,
+            $forth_payload,
+            $args,
+            $queue
+        );
     };
 }

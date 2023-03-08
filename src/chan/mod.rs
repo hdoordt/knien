@@ -115,15 +115,15 @@ mod tests {
         pub message: String,
     }
 
-    bus!(FrameBus, FramePayload);
+    bus!("A frame bus", FrameBus, FramePayload);
 }
 
 #[doc(hidden)]
 #[macro_export]
 macro_rules! bus {
-    ($name:ident, $publish_payload:ty, $doc:literal) => {
-        #[derive(Debug)]
+    ($doc:literal, $name:ident, $publish_payload:ty) => {
         #[doc = $doc]
+        #[derive(Debug)]
         pub enum $name {}
 
         impl $crate::Bus for $name {
@@ -131,6 +131,6 @@ macro_rules! bus {
         }
     };
     ($name:ident, $publish_payload:ty) => {
-        $crate::bus!($name, $publish_payload, "");
+        $crate::bus!("", $name, $publish_payload);
     };
 }

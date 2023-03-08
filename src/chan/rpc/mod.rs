@@ -436,14 +436,20 @@ mod tests {
 #[macro_export]
 /// Declare a new [RpcBus].
 macro_rules! rpc_bus {
-    ($bus:ident, $publish_payload:ty, $reply_payload:ty, $args:ty, $queue:expr, $doc:literal) => {
-        $crate::direct_bus!($bus, $publish_payload, $args, $queue, $doc);
+    ($doc:literal, $bus:ident, $publish_payload:ty, $reply_payload:ty, $args:ty, $queue:expr) => {
+        $crate::direct_bus!($doc, $bus, $publish_payload, $args, $queue);
 
         impl $crate::RpcBus for $bus {
             type ReplyPayload = $reply_payload;
         }
     };
+    (doc = $doc:literal, bus = $bus:ident, publish = $publish_payload:ty, reply = $reply_payload:ty, args = $args:ty, queue = $queue:expr) => {
+        $crate::rpc_bus!($doc, $bus, $publish_payload, $reply_payload, $args, $queue);
+    };
     ($bus:ident, $publish_payload:ty, $reply_payload:ty, $args:ty, $queue:expr) => {
-        $crate::rpc_bus!($bus, $publish_payload, $reply_payload, $args, $queue, "");
+        $crate::rpc_bus!("", $bus, $publish_payload, $reply_payload, $args, $queue);
+    };
+    (bus = $bus:ident, publish = $publish_payload:ty, reply = $reply_payload:ty, args = $args:ty, queue = $queue:expr) => {
+        $crate::rpc_bus!($bus, $publish_payload, $reply_payload, $args, $queue);
     };
 }

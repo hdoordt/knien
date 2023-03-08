@@ -124,11 +124,11 @@ pub mod tests {
     };
 
     direct_bus!(
-        FrameBus,
-        FramePayload,
-        u32,
-        |args| format!("frame_{}", args),
-        "A Bus onto which frames are sent"
+        doc = "A Bus onto which frames are sent",
+        bus = FrameBus,
+        publish = FramePayload,
+        args = u32,
+        queue = |args| format!("frame_{}", args)
     );
 
     #[tokio::test]
@@ -171,8 +171,8 @@ pub mod tests {
 /// Declare a new [DirectBus].
 #[macro_export]
 macro_rules! direct_bus {
-    ($bus:ident, $publish_payload:ty, $args:ty, $queue:expr, $doc:literal) => {
-        $crate::bus!($bus, $publish_payload, $doc);
+    ($doc:literal, $bus:ident, $publish_payload:ty, $args:ty, $queue:expr) => {
+        $crate::bus!($doc, $bus, $publish_payload);
 
         impl $crate::DirectBus for $bus {
             type Args = $args;
@@ -183,7 +183,13 @@ macro_rules! direct_bus {
             }
         }
     };
+    (doc = $doc:literal, bus = $bus:ident, publish = $publish_payload:ty, args = $args:ty, queue = $queue:expr) => {
+        $crate::direct_bus!($doc, $bus, $publish_payload, $args, $queue);
+    };
     ($bus:ident, $publish_payload:ty, $args:ty, $queue:expr) => {
-        $crate::direct_bus!($bus, $publish_payload, $args, $queue, "");
+        $crate::direct_bus!("", $bus, $publish_payload, $args, $queue);
+    };
+    (bus = $bus:ident, publish = $publish_payload:ty, args = $args:ty, queue = $queue:expr) => {
+        $crate::direct_bus!($bus, $publish_payload, $args, $queue);
     };
 }

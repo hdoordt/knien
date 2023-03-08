@@ -16,7 +16,6 @@ pub use error::*;
 /// Alias for a Result with the error type [Error].
 pub type Result<T> = std::result::Result<T, Error>;
 
-
 /// A connection to the RabbitMQ broker
 pub struct Connection {
     inner: lapin::Connection,

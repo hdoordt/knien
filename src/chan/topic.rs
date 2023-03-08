@@ -129,10 +129,7 @@ impl<B: TopicBus> TryFrom<String> for RoutingKey<B> {
         {
             return Err(RoutingKeyError::InvalidKey(key, B::TOPIC_PATTERN));
         }
-        let regex = key
-            .replace('.', r#"\."#)
-            .replace('*', r#"(.*)"#)
-            .replace('#', r#"(.*)"#);
+        let regex = key.replace('.', r#"\."#).replace(['*', '#'], r#"(.*)"#);
 
         let regex = Regex::new(&format!("^{regex}$")).unwrap();
         if !regex.is_match(B::TOPIC_PATTERN) {
@@ -209,25 +206,44 @@ mod tests {
 #[macro_export]
 /// Declare a new [TopicExchange], specifying its type identifier and name.
 macro_rules! topic_exchange {
-    ($exchange:ident, $name:literal) => {
+    ($doc:literal, $exchange:ident, $name:literal) => {
         #[derive(Debug, Clone)]
+        #[doc = $doc]
         pub enum $exchange {}
 
         impl $crate::TopicExchange for $exchange {
             const NAME: &'static str = $name;
         }
     };
+    (doc = $doc:literal, exchange = $exchange:ident, name = $name:literal) => {
+        $crate::topic_exchange!($doc, $exchange, $name);
+    };
+    ($exchange:ident, $name:literal) => {
+        $crate::topic_exchange!("", $exchange, $name);
+    };
+    (exchange = $exchange:ident, name = $name:literal) => {
+        $crate::topic_exchange!($exchange, $name);
+    };
 }
 
 #[macro_export]
 /// Declare a new [TopicBus].
 macro_rules! topic_bus {
-    ($bus:ident, $publish_payload:ty, $exchange:ty, $topic:literal) => {
+    ($doc:literal, $bus:ident, $publish_payload:ty, $exchange:ty, $topic:literal) => {
         $crate::bus!($bus, $publish_payload);
 
         impl $crate::TopicBus for $bus {
             type Exchange = $exchange;
             const TOPIC_PATTERN: &'static str = $topic;
         }
+    };
+    (doc = $doc:literal, bus = $bus:ident, publish = $publish_payload:ty, exchange = $exchange:ty, topic = $topic:literal) => {
+        $crate::topic_bus!($doc, $bus, $publish_payload, $exchange, $topic);
+    };
+    ($bus:ident, $publish_payload:ty, $exchange:ty, $topic:literal) => {
+        $crate::topic_bus!("", $bus, $publish_payload, $exchange, $topic);
+    };
+    (bus = $bus:ident, publish = $publish_payload:ty, exchange = $exchange:ty, topic = $topic:literal) => {
+        $crate::topic_bus!($bus, $publish_payload, $exchange, $topic);
     };
 }
