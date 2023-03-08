@@ -1,9 +1,18 @@
 [package]
 name = "knien"
+description = "Typed RabbitMQ interfacing for async Rust"
 version = "0.1.0"
 edition = "2021"
+authors = ["Henk Oordt <hd@oordt.dev>"]
+license = "MIT OR Apache-2.0"
+homepage = "https://github.com/hdoordt/knien"
+repository = "https://github.com/hdoordt/knien"
+documentation = "https://docs.rs/knien"
+readme = "README.md"
+keywords = ["rabbitmq", "amqp", "queue", "broker"]
+categories = ["asynchronous", "web-programming"]
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+exclude = ["docker-compose.yml"]
 
 [dependencies]
 async-trait = "0.1.64"
