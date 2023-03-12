@@ -1,5 +1,6 @@
 use std::fmt::Display;
 
+#[cfg(feature = "topic")]
 use crate::RoutingKeyError;
 
 #[derive(Debug)]
@@ -14,6 +15,7 @@ pub enum Error {
     #[cfg(feature = "rpc")]
     /// Error involving replying to a [crate::Delivery]
     Reply(crate::ReplyError),
+    #[cfg(feature = "topic")]
     /// Error validating a [crate::RoutingKey]
     RoutingKey(RoutingKeyError),
 }
@@ -44,6 +46,7 @@ impl Display for Error {
             Error::Uuid(e) => write!(f, "UUID error: {e}"),
             #[cfg(feature = "rpc")]
             Error::Reply(e) => write!(f, "Reply error: {e}"),
+            #[cfg(feature = "topic")]
             Error::RoutingKey(e) => write!(f, "Error creating routing key: {e}"),
         }
     }
