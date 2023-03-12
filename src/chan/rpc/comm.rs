@@ -1,9 +1,10 @@
-use std::marker::PhantomData;
+use std::{any::type_name, marker::PhantomData};
 
 use futures::Stream;
 use lapin::BasicProperties;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
+use tracing::debug;
 use uuid::Uuid;
 
 use crate::{
@@ -71,6 +72,7 @@ impl<B: RpcCommBus> RpcCommBus for CommReply<B> {
 impl RpcChannel {
     /// Setup a new [Publisher] associated wit the [RpcCommBus].
     pub fn comm_publisher<B: RpcCommBus>(&self) -> Publisher<Self, B> {
+        debug!("Created comm publisher for RPC bus {}", type_name::<B>());
         Publisher {
             chan: self.clone(),
             _marker: PhantomData,
@@ -106,7 +108,7 @@ where
         self.chan.register_pending_reply(correlation_uuid, tx);
 
         let properties = BasicProperties::default().with_reply_to("amq.rabbitmq.reply-to".into());
-
+        debug!("Publishing message with correlation UUID {correlation_uuid}, setting up back-and-forth communication");
         self.publish_with_properties(&B::queue(args), payload, properties, correlation_uuid)
             .await?;
         Ok(rx)
@@ -136,6 +138,7 @@ where
 
         let bytes = serde_json::to_vec(back_payload)?;
 
+        debug!("Replying forth to message with correlation UUID {correlation_uuid}");
         chan.publish_with_properties(&bytes, reply_to, Default::default(), correlation_uuid)
             .await
     }
@@ -170,6 +173,8 @@ where
         rpc_chan.register_pending_reply(correlation_uuid, tx);
 
         let properties = BasicProperties::default().with_reply_to("amq.rabbitmq.reply-to".into());
+
+        debug!("Replying back to message with correlation UUID {correlation_uuid}");
         rpc_chan
             .publish_with_properties(&bytes, reply_to, properties, correlation_uuid)
             .await?;
