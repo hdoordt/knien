@@ -12,11 +12,13 @@ use crate::{Delivery, Result};
 mod direct;
 #[cfg(feature = "rpc")]
 mod rpc;
+#[cfg(feature = "topic")]
 mod topic;
 
 pub use direct::*;
 #[cfg(feature = "rpc")]
 pub use rpc::*;
+#[cfg(feature = "topic")]
 pub use topic::*;
 
 /// A Bus. Base trait for several other buses
