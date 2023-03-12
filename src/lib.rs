@@ -5,6 +5,7 @@ use std::{fmt::Debug, marker::PhantomData, str::FromStr};
 use lapin::options::{BasicAckOptions, BasicNackOptions};
 use serde::{Deserialize, Serialize};
 
+use tracing::{debug, trace};
 use uuid::Uuid;
 
 mod chan;
@@ -25,6 +26,7 @@ impl Connection {
     /// Make a new connection to RabbitMQ
     pub async fn connect(mq_url: &str) -> Result<Self> {
         let connection = lapin::Connection::connect(mq_url, Default::default()).await?;
+        debug!("Connected to RabbitMQ instance");
         Ok(Self { inner: connection })
     }
 }
@@ -54,6 +56,9 @@ where
     /// Ack the message
     pub async fn ack(&self, multiple: bool) -> Result<()> {
         self.inner.ack(BasicAckOptions { multiple }).await?;
+        if let Some(Ok(uuid)) = self.get_uuid() {
+            trace!("Acked message with correlation UUID {uuid}");
+        }
         Ok(())
     }
 
@@ -62,6 +67,9 @@ where
         self.inner
             .nack(BasicNackOptions { multiple, requeue })
             .await?;
+        if let Some(Ok(uuid)) = self.get_uuid() {
+            trace!("Nacked message with correlation UUID {uuid}");
+        }
         Ok(())
     }
 }

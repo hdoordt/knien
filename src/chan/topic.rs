@@ -1,8 +1,9 @@
-use std::fmt::Display;
 use std::marker::PhantomData;
+use std::{any::type_name, fmt::Display};
 
 use async_trait::async_trait;
 use regex::Regex;
+use tracing::debug;
 use uuid::Uuid;
 
 use crate::{Bus, Channel, Connection, Consumer, Publisher, Result};
@@ -42,7 +43,7 @@ impl<E: TopicExchange> TopicChannel<E> {
             Default::default(),
         )
         .await?;
-
+        debug!("Created topic channel for exchange {}", E::NAME);
         Ok(Self {
             inner: chan,
             _marker: PhantomData,
@@ -68,7 +69,10 @@ impl<E: TopicExchange> TopicChannel<E> {
                 Default::default(),
             )
             .await?;
-
+        debug!(
+            "Created consumer for topic bus {} with routing key {routing_key} and consumer tag {consumer_tag}",
+            type_name::<B>()
+        );
         Ok(Consumer {
             chan: self.clone(),
             inner: consumer,
@@ -78,6 +82,7 @@ impl<E: TopicExchange> TopicChannel<E> {
 
     /// Create a new [Publisher] that publishes onto the [TopicBus].
     pub fn publisher<B: TopicBus>(&self) -> Publisher<Self, B> {
+        debug!("Created published for topic bus {}", type_name::<B>());
         Publisher {
             chan: self.clone(),
             _marker: PhantomData,
@@ -96,6 +101,7 @@ impl<E: TopicExchange> Channel for TopicChannel<E> {
     ) -> Result<()> {
         let properties = properties.with_correlation_id(correlation_uuid.to_string().into());
 
+        debug!("Publishing message with correlation UUID {correlation_uuid} on Topic Exchange {} with routing key {routing_key}", E::NAME);
         self.inner
             .basic_publish(
                 E::NAME,

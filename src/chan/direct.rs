@@ -1,7 +1,8 @@
-use std::marker::PhantomData;
+use std::{any::type_name, marker::PhantomData};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use tracing::debug;
 use uuid::Uuid;
 
 use crate::{Bus, Connection, Result};
@@ -48,6 +49,11 @@ impl DirectChannel {
             .basic_consume(&queue, consumer_tag, Default::default(), Default::default())
             .await?;
 
+        debug!(
+            "Created consumer for direct bus {} for queue {queue} with consumer tag {consumer_tag}",
+            type_name::<B>()
+        );
+
         Ok(Consumer {
             chan: self.clone(),
             inner: consumer,
@@ -57,6 +63,7 @@ impl DirectChannel {
 
     /// Create a new [Publisher] that allows for publishing on the [DirectBus]
     pub fn publisher<B: DirectBus>(&self) -> Publisher<Self, B> {
+        debug!("Created published for direct bus {}", type_name::<B>());
         Publisher {
             chan: self.clone(),
             _marker: PhantomData,
@@ -95,6 +102,7 @@ impl Channel for DirectChannel {
     ) -> Result<()> {
         let properties = properties.with_correlation_id(correlation_uuid.to_string().into());
 
+        debug!("Publishing message with correlation UUID {correlation_uuid} a direct channel with routing key {routing_key}");
         self.inner
             .basic_publish(
                 "",

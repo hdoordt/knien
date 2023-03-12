@@ -1,4 +1,4 @@
-use std::{fmt::Display, marker::PhantomData, sync::Arc, task::Poll};
+use std::{any::type_name, fmt::Display, marker::PhantomData, sync::Arc, task::Poll};
 
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -10,6 +10,7 @@ use tokio::{
     sync::mpsc,
     task::{self, JoinHandle},
 };
+use tracing::debug;
 use uuid::Uuid;
 
 use crate::{delivery_uuid, error::Error, Bus, Connection, Delivery, Result};
@@ -128,7 +129,7 @@ impl RpcChannel {
         })
     }
 
-    pub(crate) fn register_pending_reply(
+    fn register_pending_reply(
         &self,
         correlation_uuid: Uuid,
         tx: mpsc::UnboundedSender<lapin::message::Delivery>,
@@ -136,7 +137,7 @@ impl RpcChannel {
         self.pending_replies.insert(correlation_uuid, tx);
     }
 
-    pub(crate) fn remove_pending_reply(&self, correlation_uuid: &Uuid) {
+    fn remove_pending_reply(&self, correlation_uuid: &Uuid) {
         self.pending_replies.remove(correlation_uuid);
     }
 
@@ -157,6 +158,11 @@ impl RpcChannel {
             .basic_consume(&queue, consumer_tag, Default::default(), Default::default())
             .await?;
 
+        debug!(
+            "Created consumer for RPC bus {} for queue {queue} with consumer tag {consumer_tag}",
+            type_name::<B>()
+        );
+
         Ok(Consumer {
             chan: self.clone(),
             inner: consumer,
@@ -166,6 +172,7 @@ impl RpcChannel {
 
     /// Create a new [Publisher] that allows for publishing on the [RpcBus]
     pub fn publisher<B: RpcBus>(&self) -> Publisher<Self, B> {
+        debug!("Created publisher for RPC bus {}", type_name::<B>());
         Publisher {
             chan: self.clone(),
             _marker: PhantomData,
@@ -184,6 +191,7 @@ impl Channel for RpcChannel {
     ) -> Result<()> {
         let properties = properties.with_correlation_id(correlation_uuid.to_string().into());
 
+        debug!("Publishing message with correlation UUID {correlation_uuid} an RPC channel with routing key {routing_key}");
         self.inner
             .basic_publish(
                 "",
@@ -225,6 +233,7 @@ where
 
         let properties = BasicProperties::default().with_reply_to("amq.rabbitmq.reply-to".into());
 
+        debug!("Publishing message with correlation UUID {correlation_uuid}, expecting one or more replies");
         self.publish_with_properties(&B::queue(args), payload, properties, correlation_uuid)
             .await?;
         Ok(rx)
@@ -261,6 +270,7 @@ where
 
         let bytes = serde_json::to_vec(reply_payload)?;
 
+        debug!("Replying to message with correlation UUID {correlation_uuid}");
         chan.publish_with_properties(&bytes, reply_to, Default::default(), correlation_uuid)
             .await
     }
@@ -291,11 +301,15 @@ impl<B> Stream for ReplyReceiver<B> {
 }
 
 #[pinned_drop]
-impl<T> PinnedDrop for ReplyReceiver<T> {
+impl<B> PinnedDrop for ReplyReceiver<B> {
     fn drop(self: std::pin::Pin<&mut Self>) {
         let mut this = self.project();
         let chan = this.chan.take().unwrap();
         let correlation_uuid = *this.correlation_uuid;
+        debug!(
+            "Closed reply receiver for correlation UUID {correlation_uuid} and RPC bus {}",
+            type_name::<B>()
+        );
         task::spawn_blocking(move || chan.remove_pending_reply(&correlation_uuid));
     }
 }
