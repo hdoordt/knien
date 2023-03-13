@@ -3,6 +3,7 @@ use std::{any::type_name, fmt::Display};
 
 use async_trait::async_trait;
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use tracing::debug;
 use uuid::Uuid;
 
@@ -113,6 +114,29 @@ impl<E: TopicExchange> Channel for TopicChannel<E> {
             .await?;
 
         Ok(())
+    }
+}
+
+impl<'p, E, B> Publisher<TopicChannel<E>, B>
+where
+    E: TopicExchange,
+    B: TopicBus,
+    B::PublishPayload: Deserialize<'p> + Serialize,
+{
+    /// Publish a message onto a topic on the exchange associated with the [TopicBus] for this [Publisher] with the passed [RoutingKey].
+    pub async fn publish_topic(
+        &self,
+        routing_key: RoutingKey<B>,
+        payload: &B::PublishPayload,
+    ) -> Result<()> {
+        let correlation_uuid = Uuid::new_v4();
+        self.publish_with_properties(
+            &routing_key.key,
+            payload,
+            Default::default(),
+            correlation_uuid,
+        )
+        .await
     }
 }
 

@@ -71,9 +71,8 @@ impl DirectChannel {
     }
 }
 
-impl<'p, C, B> Publisher<C, B>
+impl<'p, B> Publisher<DirectChannel, B>
 where
-    C: Channel,
     B: DirectBus,
     B::PublishPayload: Deserialize<'p> + Serialize,
 {
