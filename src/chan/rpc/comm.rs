@@ -197,7 +197,7 @@ mod tests {
 macro_rules! rpc_comm_bus {
     ($doc:literal, $bus:ident, $initial_payload:ty, $back_payload:ty, $forth_payload:ty, $args:ty, $queue:expr) => {
         #[doc = $doc]
-        #[derive(Debug)]
+        #[derive(Clone, Copy, Debug)]
         pub enum $bus {}
 
         impl $crate::RpcCommBus for $bus {
