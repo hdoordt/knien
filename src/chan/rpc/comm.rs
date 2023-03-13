@@ -8,7 +8,8 @@ use tracing::debug;
 use uuid::Uuid;
 
 use crate::{
-    error::Error, Bus, Channel, Delivery, DirectBus, Publisher, ReplyError, Result, RpcChannel,
+    error::Error, Bus, Channel, Consumer, Delivery, DirectBus, Publisher, ReplyError, Result,
+    RpcChannel,
 };
 
 use super::ReplyReceiver;
@@ -70,6 +71,35 @@ impl<B: RpcCommBus> RpcCommBus for CommReply<B> {
 }
 
 impl RpcChannel {
+    /// Create a new [Consumer] for the [RpcCommBus] that declares
+    /// a direct queue with the name produced by [RpcCommBus::queue]
+    /// given the passed [RpcCommBus::Args]
+    pub async fn comm_consumer<B: RpcCommBus>(
+        &self,
+        args: B::Args,
+        consumer_tag: &str,
+    ) -> Result<Consumer<Self, B>> {
+        let queue = B::queue(args);
+        self.inner
+            .queue_declare(&queue, Default::default(), Default::default())
+            .await?;
+        let consumer = self
+            .inner
+            .basic_consume(&queue, consumer_tag, Default::default(), Default::default())
+            .await?;
+
+        debug!(
+            "Created consumer for RPC comm bus {} for queue {queue} with consumer tag {consumer_tag}",
+            type_name::<B>()
+        );
+
+        Ok(Consumer {
+            chan: self.clone(),
+            inner: consumer,
+            _marker: PhantomData,
+        })
+    }
+
     /// Setup a new [Publisher] associated wit the [RpcCommBus].
     pub fn comm_publisher<B: RpcCommBus>(&self) -> Publisher<Self, B> {
         debug!("Created comm publisher for RPC bus {}", type_name::<B>());
