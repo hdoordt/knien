@@ -16,7 +16,7 @@ pub enum Error {
     /// Error involving replying to a [crate::Delivery]
     Reply(crate::ReplyError),
     #[cfg(feature = "topic")]
-    /// Error validating a [crate::RoutingKey]
+    /// Error validating a [crate::ConsumerRoutingKey] or a [crate::PublisherRoutingKey]
     RoutingKey(RoutingKeyError),
 }
 
