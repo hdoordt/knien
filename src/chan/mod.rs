@@ -75,6 +75,7 @@ where
 /// [Publisher]s allow for publishing messages with payloads
 /// of the [Bus::PublishPayload] type. [Publisher]s take care
 /// of serializing the payloads before publishing.
+#[derive(Clone)]
 pub struct Publisher<C, B> {
     chan: C,
     _marker: PhantomData<B>,
