@@ -55,7 +55,7 @@ impl<E: TopicExchange> TopicChannel<E> {
     /// messages with routing keys matching the passed [RoutingKey].
     pub async fn consumer<B: TopicBus>(
         &self,
-        routing_key: RoutingKey<B>,
+        routing_key: ConsumeRoutingKey<B>,
         consumer_tag: &str,
     ) -> Result<Consumer<Self, B>> {
         self.inner
@@ -126,7 +126,7 @@ where
     /// Publish a message onto a topic on the exchange associated with the [TopicBus] for this [Publisher] with the passed [RoutingKey].
     pub async fn publish_topic(
         &self,
-        routing_key: RoutingKey<B>,
+        routing_key: PublishRoutingKey<B>,
         payload: &B::PublishPayload,
     ) -> Result<()> {
         let correlation_uuid = Uuid::new_v4();
@@ -142,27 +142,76 @@ where
 
 /// A Routing key that can be used to consume messages from a [TopicBus].
 #[derive(Debug)]
-pub struct RoutingKey<B> {
+pub struct ConsumeRoutingKey<B> {
     key: String,
     _marker: PhantomData<B>,
 }
 
-impl<B: TopicBus> TryFrom<String> for RoutingKey<B> {
+impl<B: TopicBus> TryFrom<String> for ConsumeRoutingKey<B> {
     type Error = RoutingKeyError;
 
     fn try_from(key: String) -> std::result::Result<Self, Self::Error> {
-        if key.contains("**")
-            || key.contains("##")
-            || key.contains("..")
-            || key.starts_with('.')
-            || key.ends_with('.')
-        {
+        let mut pattern_parts = B::TOPIC_PATTERN.split('.');
+        let mut key_parts = key.split('.');
+
+        let mut parts = vec![];
+        loop {
+            let pattern_part = pattern_parts.next();
+            let key_part = key_parts.next();
+            // TODO this is incorrect
+            match (pattern_part, key_part) {
+                (Some(p), Some(k)) if p == k || p == "*" => {
+                    parts.push((p, k))
+                },
+                (None, Some(k)) if k == "#" && key_parts.next().is_none() => break,
+                (None, None) => break,
+                v => {
+                    
+                    dbg!(parts);
+                    dbg!(v);
+                    return Err(RoutingKeyError::InvalidKey(key, B::TOPIC_PATTERN))
+                },
+            };
+        }
+
+        Ok(Self {
+            key,
+            _marker: PhantomData,
+        })
+    }
+}
+
+impl<B> Display for ConsumeRoutingKey<B> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.key.fmt(f)
+    }
+}
+
+/// A Routing key that can be used to publish messages on a [TopicBus].
+/// Can only represent concrete routing keys, i.e. routing keys cannot contain wildcards.
+#[derive(Debug)]
+pub struct PublishRoutingKey<B> {
+    key: String,
+    _marker: PhantomData<B>,
+}
+
+impl<B: TopicBus> TryFrom<String> for PublishRoutingKey<B> {
+    type Error = RoutingKeyError;
+
+    fn try_from(key: String) -> std::result::Result<Self, Self::Error> {
+        // Don't accept wildcards
+        if key.contains('*') || key.contains('#') {
+            return Err(RoutingKeyError::AbstractPublishKey(key));
+        }
+        if key.starts_with('.') || key.ends_with('.') || key.contains("..") {
             return Err(RoutingKeyError::InvalidKey(key, B::TOPIC_PATTERN));
         }
-        let regex = key.replace('.', r#"\."#).replace(['*', '#'], r#"(.*)"#);
+        let regex = B::TOPIC_PATTERN
+            .replace('.', r#"\."#)
+            .replace(['*', '#'], r#"(.*)"#);
 
         let regex = Regex::new(&format!("^{regex}$")).unwrap();
-        if !regex.is_match(B::TOPIC_PATTERN) {
+        if !regex.is_match(&key) {
             return Err(RoutingKeyError::InvalidKey(key, B::TOPIC_PATTERN));
         }
 
@@ -173,7 +222,7 @@ impl<B: TopicBus> TryFrom<String> for RoutingKey<B> {
     }
 }
 
-impl<B> Display for RoutingKey<B> {
+impl<B> Display for PublishRoutingKey<B> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.key.fmt(f)
     }
@@ -182,8 +231,10 @@ impl<B> Display for RoutingKey<B> {
 #[derive(Debug)]
 /// Error indicating what went wrong in setting up a [RoutingKey]
 pub enum RoutingKeyError {
-    /// Got a key that does not match the topic pattern associated with the [TopicBus].
+    /// Got a routing key that does not match the topic pattern associated with the [TopicBus].
     InvalidKey(String, &'static str),
+    /// Got a publish routing key that contained wildcards.
+    AbstractPublishKey(String),
 }
 
 impl Display for RoutingKeyError {
@@ -192,6 +243,10 @@ impl Display for RoutingKeyError {
             RoutingKeyError::InvalidKey(key, topic) => {
                 write!(f, "Routing key {key} is not valid for topic {topic}")
             }
+            RoutingKeyError::AbstractPublishKey(key) => write!(
+                f,
+                "Routing key meant for publishing cannot contain wildcards: {key}"
+            ),
         }
     }
 }
@@ -200,36 +255,59 @@ impl std::error::Error for RoutingKeyError {}
 
 #[cfg(test)]
 mod tests {
-    use crate::{topic_bus, topic_exchange, RoutingKey};
+    use crate::{topic_bus, topic_exchange, ConsumeRoutingKey};
 
     topic_exchange!(MyExchange, "the_exchange");
-    topic_bus!(MyTopic, (), MyExchange, "this.is.a.topic");
+
+    topic_bus!(MyTopic, (), MyExchange, "frame.*.*");
+
+    topic_bus!(MyOtherTopic, (), MyExchange, "message.#");
 
     #[test]
-    fn test_routing_key() {
+    fn test_consume_routing_key() {
         // Valid cases
-        RoutingKey::<MyTopic>::try_from("this.*".to_owned()).unwrap();
-        RoutingKey::<MyTopic>::try_from("this.*.a.*".to_owned()).unwrap();
-        RoutingKey::<MyTopic>::try_from("this.*.a.#".to_owned()).unwrap();
-        RoutingKey::<MyTopic>::try_from("this.is.a.topic".to_owned()).unwrap();
-        RoutingKey::<MyTopic>::try_from("*.is.a.topic".to_owned()).unwrap();
-        RoutingKey::<MyTopic>::try_from("*.*.a.topic".to_owned()).unwrap();
-        RoutingKey::<MyTopic>::try_from("#.a.topic".to_owned()).unwrap();
-        RoutingKey::<MyTopic>::try_from("#".to_owned()).unwrap();
-
+        ConsumeRoutingKey::<MyTopic>::try_from("frame.*.*".to_owned()).unwrap();
+        ConsumeRoutingKey::<MyTopic>::try_from("frame.123.*".to_owned()).unwrap();
+        ConsumeRoutingKey::<MyTopic>::try_from("frame.*.456".to_owned()).unwrap();
+        ConsumeRoutingKey::<MyTopic>::try_from("frame.123.456".to_owned()).unwrap();
+        ConsumeRoutingKey::<MyTopic>::try_from("frame.#".to_owned()).unwrap();
+        ConsumeRoutingKey::<MyTopic>::try_from("frame.#.*".to_owned()).unwrap();
+        ConsumeRoutingKey::<MyTopic>::try_from("frame.*.#".to_owned()).unwrap();
+        ConsumeRoutingKey::<MyTopic>::try_from("frame.#.456".to_owned()).unwrap();
+        ConsumeRoutingKey::<MyTopic>::try_from("frame.123.#".to_owned()).unwrap();
+        
         // Invalid cases
-        RoutingKey::<MyTopic>::try_from("this".to_owned()).unwrap_err(); // Too short
-        RoutingKey::<MyTopic>::try_from("this.is".to_owned()).unwrap_err(); // Too short
-        RoutingKey::<MyTopic>::try_from("that.*".to_owned()).unwrap_err(); // Invalid word
-        RoutingKey::<MyTopic>::try_from("and.this.is.a.topic".to_owned()).unwrap_err(); // Invalid word
-        RoutingKey::<MyTopic>::try_from("this.is.a.topic.that.is.too.long".to_owned()).unwrap_err(); // Too long
-        RoutingKey::<MyTopic>::try_from("this.**".to_owned()).unwrap_err(); // Double *
-        RoutingKey::<MyTopic>::try_from("this.**.is".to_owned()).unwrap_err(); // Double *
-        RoutingKey::<MyTopic>::try_from("this.##.is".to_owned()).unwrap_err(); // Double #
-        RoutingKey::<MyTopic>::try_from("##".to_owned()).unwrap_err(); // Double #
-        RoutingKey::<MyTopic>::try_from("this.is.a.topic.*".to_owned()).unwrap_err(); // Too long
-        RoutingKey::<MyTopic>::try_from("this.is.a.topic.#".to_owned()).unwrap_err();
+        // More abstract than pattern
+        ConsumeRoutingKey::<MyTopic>::try_from("*".to_owned()).unwrap_err();
+        // RabbbitMQ accepts this, but it would result in consumption of all messages on the topic exchange
+        ConsumeRoutingKey::<MyTopic>::try_from("#".to_owned()).unwrap_err();
+        // More abstract than pattern
+        ConsumeRoutingKey::<MyTopic>::try_from("*.*.*".to_owned()).unwrap_err();
         // Too long
+        ConsumeRoutingKey::<MyTopic>::try_from("frame.*.*.*".to_owned()).unwrap_err();
+        // Invalid word
+        ConsumeRoutingKey::<MyTopic>::try_from("test.*.*".to_owned()).unwrap_err();
+        // Too long
+        ConsumeRoutingKey::<MyTopic>::try_from("frame.123.*.*".to_owned()).unwrap_err();
+        // Too long
+        ConsumeRoutingKey::<MyTopic>::try_from("frame.*.456.*".to_owned()).unwrap_err();
+        // Too long
+        ConsumeRoutingKey::<MyTopic>::try_from("frame.*.*.789".to_owned()).unwrap_err();
+        // Too long
+        ConsumeRoutingKey::<MyTopic>::try_from("frame.123.*.789".to_owned()).unwrap_err();
+        // Too long
+        ConsumeRoutingKey::<MyTopic>::try_from("frame.123.456.*".to_owned()).unwrap_err();
+        // Too long
+        ConsumeRoutingKey::<MyTopic>::try_from("frame.*.456.789".to_owned()).unwrap_err();
+        // Too long
+        ConsumeRoutingKey::<MyTopic>::try_from("frame.124.456.789".to_owned()).unwrap_err();
+        // Too long
+        ConsumeRoutingKey::<MyTopic>::try_from("frame.#.456.789".to_owned()).unwrap_err();
+        // Not starting with 'frame'
+        ConsumeRoutingKey::<MyTopic>::try_from("#.456.789".to_owned()).unwrap_err();
+        // Too long
+        ConsumeRoutingKey::<MyTopic>::try_from("#.frame.456.789".to_owned()).unwrap_err();
+        
     }
 }
 
