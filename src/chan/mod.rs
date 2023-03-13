@@ -125,7 +125,7 @@ mod tests {
 macro_rules! bus {
     ($doc:literal, $name:ident, $publish_payload:ty) => {
         #[doc = $doc]
-        #[derive(Debug)]
+        #[derive(Clone, Copy, Debug)]
         pub enum $name {}
 
         impl $crate::Bus for $name {
