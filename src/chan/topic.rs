@@ -83,7 +83,7 @@ impl<E: TopicExchange> TopicChannel<E> {
 
     /// Create a new [Publisher] that publishes onto the [TopicBus].
     pub fn publisher<B: TopicBus>(&self) -> Publisher<Self, B> {
-        debug!("Created published for topic bus {}", type_name::<B>());
+        debug!("Created publisher for topic bus {}", type_name::<B>());
         Publisher {
             chan: self.clone(),
             _marker: PhantomData,

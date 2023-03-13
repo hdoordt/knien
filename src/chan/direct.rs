@@ -63,7 +63,7 @@ impl DirectChannel {
 
     /// Create a new [Publisher] that allows for publishing on the [DirectBus]
     pub fn publisher<B: DirectBus>(&self) -> Publisher<Self, B> {
-        debug!("Created published for direct bus {}", type_name::<B>());
+        debug!("Created publisher for direct bus {}", type_name::<B>());
         Publisher {
             chan: self.clone(),
             _marker: PhantomData,
