@@ -2,6 +2,7 @@ use std::marker::PhantomData;
 use std::{any::type_name, fmt::Display};
 
 use async_trait::async_trait;
+use lapin::options::QueueDeclareOptions;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
@@ -58,13 +59,32 @@ impl<E: TopicExchange> TopicChannel<E> {
         routing_key: ConsumerRoutingKey<B>,
         consumer_tag: &str,
     ) -> Result<Consumer<Self, B>> {
+        let queue = self
+            .inner
+            .queue_declare(
+                "",
+                QueueDeclareOptions {
+                    // Clean up queue on channel disconnection
+                    exclusive: true,
+                    ..Default::default()
+                },
+                Default::default(),
+            )
+            .await?;
+        let queue_name = queue.name().as_str();
         self.inner
-            .queue_declare(&routing_key.key, Default::default(), Default::default())
+            .queue_bind(
+                queue_name,
+                E::NAME,
+                &routing_key.key,
+                Default::default(),
+                Default::default(),
+            )
             .await?;
         let consumer = self
             .inner
             .basic_consume(
-                &routing_key.key,
+                queue_name,
                 consumer_tag,
                 Default::default(),
                 Default::default(),
@@ -102,7 +122,7 @@ impl<E: TopicExchange> Channel for TopicChannel<E> {
     ) -> Result<()> {
         let properties = properties.with_correlation_id(correlation_uuid.to_string().into());
 
-        debug!("Publishing message with correlation UUID {correlation_uuid} on Topic Exchange {} with routing key {routing_key}", E::NAME);
+        debug!("Publishing message with correlation UUID {correlation_uuid} on Topic Exchange '{}' with routing key {routing_key}", E::NAME);
         self.inner
             .basic_publish(
                 E::NAME,
