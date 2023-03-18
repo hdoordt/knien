@@ -8,8 +8,8 @@ use tracing::debug;
 use uuid::Uuid;
 
 use crate::{
-    error::Error, Bus, Channel, Consumer, Delivery, DirectBus, DynDelivery, Publisher, ReplyError,
-    Result, RpcChannel,
+    error::Error, Bus, Channel, Consumer, Delivery, DirectBus, DynRpcDelivery, Publisher,
+    ReplyError, Result, RpcChannel,
 };
 
 use super::ReplyReceiver;
@@ -227,11 +227,13 @@ where
         })
     }
 
-    /// Convert this [Delivery] into a [DynDelivery]
-    pub fn into_dyn(self) -> DynDelivery<B::BackPayload, B::ForthPayload> {
-        DynDelivery {
-            inner: self.inner,
-            _publish: PhantomData,
+    /// Convert this [Delivery] into a [DynRpcDelivery]
+    pub fn into_dyn_comm(self) -> DynRpcDelivery<B::BackPayload, B::ForthPayload> {
+        DynRpcDelivery {
+            inner: crate::DynDelivery {
+                inner: self.inner,
+                _marker: PhantomData,
+            },
             _reply: PhantomData,
         }
     }
