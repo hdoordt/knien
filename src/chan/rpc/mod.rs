@@ -10,7 +10,7 @@ use tokio::{
     sync::mpsc,
     task::{self, JoinHandle},
 };
-use tracing::debug;
+use tracing::{debug, warn};
 use uuid::Uuid;
 
 use crate::{delivery_uuid, error::Error, Bus, Connection, Delivery, Result};
@@ -104,11 +104,15 @@ impl RpcChannel {
                                         Err(_) => todo!("report error"),
                                     };
 
-                                    if let Some(tx) = pending_replies.get(&msg_id) {
-                                        tx.send(msg).unwrap();
-                                    } else {
-                                        todo!("Report absence of sender");
-                                    };
+                                    let forwarding_success =
+                                        if let Some(tx) = pending_replies.get(&msg_id) {
+                                            tx.send(msg).is_ok()
+                                        } else {
+                                            false
+                                        };
+                                    if forwarding_success {
+                                        warn!("Received reply cannot be forwarded due to dropped Receiver. UUID: {}", msg_id);
+                                    }
                                 }
                             });
                             // `forward_reply` should run to completion
@@ -247,7 +251,7 @@ where
         payload: &B::PublishPayload,
     ) -> Result<impl Future<Output = Option<Delivery<Reply<B>>>>> {
         let rx = self.publish_recv_many(args, payload).await?;
-        Ok(async { rx.take(1).next().await })
+        Ok(async move { rx.take(1).next().await })
     }
 }
 
@@ -273,6 +277,50 @@ where
         debug!("Replying to message with correlation UUID {correlation_uuid}");
         chan.publish_with_properties(&bytes, reply_to, Default::default(), correlation_uuid)
             .await
+    }
+}
+
+#[derive(Debug)]
+/// A Delivery that is not tied to a [Bus], but instead is generic over
+/// the publish and reply payload of the [RpcBus] or [RpcCommBus] associated with the [Delivery]
+/// it was converted from.
+pub struct DynDelivery<P, R> {
+    inner: lapin::message::Delivery,
+    _publish: PhantomData<P>,
+    _reply: PhantomData<R>,
+}
+
+impl<'dp, 'dr, P, R> DynDelivery<P, R>
+where
+    P: Deserialize<'dp> + Serialize,
+    R: Deserialize<'dr> + Serialize,
+{
+    /// Get the message correlation [Uuid]
+    pub fn get_uuid(&self) -> Option<Result<Uuid>> {
+        delivery_uuid(&self.inner)
+    }
+
+    /// Reply to a [DynDelivery]
+    pub async fn reply(&self, reply_payload: &R, chan: &impl Channel) -> Result<()> {
+        let Some(correlation_uuid) = self.get_uuid() else {
+            return Err(Error::Reply(ReplyError::NoCorrelationUuid));
+        };
+        let Some(reply_to) = self.inner.properties.reply_to().as_ref().map(|r | r.as_str()) else {
+            return Err(Error::Reply(ReplyError::NoReplyToConfigured))
+        };
+
+        let correlation_uuid = correlation_uuid?;
+
+        let bytes = serde_json::to_vec(reply_payload)?;
+
+        debug!("Replying forth to message with correlation UUID {correlation_uuid}");
+        chan.publish_with_properties(&bytes, reply_to, Default::default(), correlation_uuid)
+            .await
+    }
+
+    /// Deserialize and return the payload from the [DynDelivery]
+    pub fn get_payload(&'dp self) -> Result<P> {
+        Ok(serde_json::from_slice(&self.inner.data)?)
     }
 }
 
