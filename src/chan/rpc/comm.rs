@@ -1,6 +1,6 @@
 use std::{any::type_name, marker::PhantomData};
 
-use futures::Stream;
+use futures::{Future, Stream, StreamExt};
 use lapin::BasicProperties;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -8,8 +8,8 @@ use tracing::debug;
 use uuid::Uuid;
 
 use crate::{
-    error::Error, Bus, Channel, Consumer, Delivery, DirectBus, Publisher, ReplyError, Result,
-    RpcChannel,
+    error::Error, Bus, Channel, Consumer, Delivery, DirectBus, DynRpcDelivery, Publisher,
+    ReplyError, Result, RpcChannel,
 };
 
 use super::ReplyReceiver;
@@ -154,7 +154,7 @@ where
     /// Reply to a message that was sent by the receiver of the initial message.
     pub async fn reply_forth(
         &self,
-        back_payload: &B::ForthPayload,
+        forth_payload: &B::ForthPayload,
         chan: &impl Channel,
     ) -> Result<()> {
         let Some(correlation_uuid) = self.get_uuid() else {
@@ -166,7 +166,7 @@ where
 
         let correlation_uuid = correlation_uuid?;
 
-        let bytes = serde_json::to_vec(back_payload)?;
+        let bytes = serde_json::to_vec(forth_payload)?;
 
         debug!("Replying forth to message with correlation UUID {correlation_uuid}");
         chan.publish_with_properties(&bytes, reply_to, Default::default(), correlation_uuid)
@@ -174,7 +174,7 @@ where
     }
 
     /// Reply to a message that was sent by the receiver of the initial message and await
-    /// any further messages from the receiver.
+    /// multiple replies from the receiver.
     /// The messages can be obtained by calling [futures::StreamExt::next] on the returned [Stream].
     pub async fn reply_recv_many(
         &self,
@@ -209,6 +209,33 @@ where
             .publish_with_properties(&bytes, reply_to, properties, correlation_uuid)
             .await?;
         Ok(rx)
+    }
+
+    /// Reply to a message that was sent by the receiver of the initial message and await
+    /// one reply from the receiver.
+    /// The message can be obtained by `await`ing the returned [Future].
+    pub async fn reply_recv(
+        &self,
+        back_payload: &B::BackPayload,
+        rpc_chan: &RpcChannel,
+    ) -> Result<impl Future<Output = Delivery<CommReply<B>>>> {
+        let rx = self.reply_recv_many(back_payload, rpc_chan).await?;
+        Ok(async move {
+            // As `rx` won't be dropped, we can assume that either
+            // this future never resolves, or it resolves to a `Some`
+            rx.take(1).next().await.unwrap()
+        })
+    }
+
+    /// Convert this [Delivery] into a [DynRpcDelivery]
+    pub fn into_dyn_comm(self) -> DynRpcDelivery<B::BackPayload, B::ForthPayload> {
+        DynRpcDelivery {
+            inner: crate::DynDelivery {
+                inner: self.inner,
+                _marker: PhantomData,
+            },
+            _reply: PhantomData,
+        }
     }
 }
 

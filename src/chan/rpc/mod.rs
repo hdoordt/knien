@@ -1,4 +1,11 @@
-use std::{any::type_name, fmt::Display, marker::PhantomData, sync::Arc, task::Poll};
+use std::{
+    any::type_name,
+    fmt::Display,
+    marker::PhantomData,
+    ops::{Deref, DerefMut},
+    sync::Arc,
+    task::Poll,
+};
 
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -10,10 +17,10 @@ use tokio::{
     sync::mpsc,
     task::{self, JoinHandle},
 };
-use tracing::debug;
+use tracing::{debug, warn};
 use uuid::Uuid;
 
-use crate::{delivery_uuid, error::Error, Bus, Connection, Delivery, Result};
+use crate::{delivery_uuid, error::Error, Bus, Connection, Delivery, DynDelivery, Result};
 
 use super::{direct::DirectBus, Channel, Consumer, Publisher};
 
@@ -104,11 +111,15 @@ impl RpcChannel {
                                         Err(_) => todo!("report error"),
                                     };
 
-                                    if let Some(tx) = pending_replies.get(&msg_id) {
-                                        tx.send(msg).unwrap();
-                                    } else {
-                                        todo!("Report absence of sender");
-                                    };
+                                    let forwarding_success =
+                                        if let Some(tx) = pending_replies.get(&msg_id) {
+                                            tx.send(msg).is_ok()
+                                        } else {
+                                            false
+                                        };
+                                    if forwarding_success {
+                                        warn!("Received reply cannot be forwarded due to dropped Receiver. UUID: {}", msg_id);
+                                    }
                                 }
                             });
                             // `forward_reply` should run to completion
@@ -247,7 +258,7 @@ where
         payload: &B::PublishPayload,
     ) -> Result<impl Future<Output = Option<Delivery<Reply<B>>>>> {
         let rx = self.publish_recv_many(args, payload).await?;
-        Ok(async { rx.take(1).next().await })
+        Ok(async move { rx.take(1).next().await })
     }
 }
 
@@ -273,6 +284,55 @@ where
         debug!("Replying to message with correlation UUID {correlation_uuid}");
         chan.publish_with_properties(&bytes, reply_to, Default::default(), correlation_uuid)
             .await
+    }
+}
+
+#[derive(Debug)]
+/// A Delivery that is not tied to a [Bus], but instead is generic over
+/// the publish and reply payload of the [RpcBus] or [RpcCommBus] associated with the [Delivery]
+/// it was converted from. It can be used to combine [Delivery]s that originate from different
+/// [RpcBus]es, that have identical `PublishPayload` and `ReplyPayload` types defined,
+/// and allow for deserializing the `PublishPayload` as well as replying with the `ReplyPayload`
+pub struct DynRpcDelivery<P, R> {
+    inner: DynDelivery<P>,
+    _reply: PhantomData<R>,
+}
+
+impl<'dp, 'dr, P, R> DynRpcDelivery<P, R>
+where
+    P: Deserialize<'dp> + Serialize,
+    R: Deserialize<'dr> + Serialize,
+{
+    /// Reply to a [DynDelivery]
+    pub async fn reply(&self, reply_payload: &R, chan: &impl Channel) -> Result<()> {
+        let Some(correlation_uuid) = self.inner.get_uuid() else {
+            return Err(Error::Reply(ReplyError::NoCorrelationUuid));
+        };
+        let Some(reply_to) = self.inner.inner.properties.reply_to().as_ref().map(|r | r.as_str()) else {
+            return Err(Error::Reply(ReplyError::NoReplyToConfigured))
+        };
+
+        let correlation_uuid = correlation_uuid?;
+
+        let bytes = serde_json::to_vec(reply_payload)?;
+
+        debug!("Replying forth to message with correlation UUID {correlation_uuid}");
+        chan.publish_with_properties(&bytes, reply_to, Default::default(), correlation_uuid)
+            .await
+    }
+}
+
+impl<P, R> Deref for DynRpcDelivery<P, R> {
+    type Target = DynDelivery<P>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl<P, R> DerefMut for DynRpcDelivery<P, R> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
     }
 }
 
