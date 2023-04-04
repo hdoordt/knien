@@ -8,8 +8,8 @@ use tracing::debug;
 use uuid::Uuid;
 
 use crate::{
-    error::Error, Bus, Channel, Consumer, Delivery, DirectBus, DynRpcDelivery, Publisher,
-    ReplyError, Result, RpcChannel, RpcBus,
+    error::Error, Bus, Channel, Consumer, Delivery, DirectBus, Publisher, ReplyError, Result,
+    RpcBus, RpcChannel,
 };
 
 use super::ReplyReceiver;
@@ -56,11 +56,11 @@ pub struct CommReply<B> {
     _marker: PhantomData<B>,
 }
 
-impl <B: RpcCommBus> Bus for CommReply<B> {
+impl<B: RpcCommBus> Bus for CommReply<B> {
     type PublishPayload = B::BackPayload;
 }
 
-impl <B: RpcCommBus> DirectBus for CommReply<B> {
+impl<B: RpcCommBus> DirectBus for CommReply<B> {
     type Args = B::Args;
 
     fn queue(args: Self::Args) -> String {
@@ -228,17 +228,6 @@ where
             // this future never resolves, or it resolves to a `Some`
             rx.take(1).next().await.unwrap()
         })
-    }
-
-    /// Convert this [Delivery] into a [DynRpcDelivery]
-    pub fn into_dyn_comm(self) -> DynRpcDelivery<B::BackPayload, B::ForthPayload> {
-        DynRpcDelivery {
-            inner: crate::DynDelivery {
-                inner: self.inner,
-                _marker: PhantomData,
-            },
-            _reply: PhantomData,
-        }
     }
 }
 
