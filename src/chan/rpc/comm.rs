@@ -8,8 +8,8 @@ use tracing::debug;
 use uuid::Uuid;
 
 use crate::{
-    error::Error, Bus, Channel, Consumer, Delivery, DirectBus, DynRpcDelivery, Publisher,
-    ReplyError, Result, RpcChannel,
+    error::Error, Bus, Channel, Consumer, Delivery, DirectBus, Publisher, ReplyError, Result,
+    RpcBus, RpcChannel, Reply,
 };
 
 use super::ReplyReceiver;
@@ -35,7 +35,7 @@ pub trait RpcCommBus {
 }
 
 impl<B: RpcCommBus> Bus for B {
-    type PublishPayload = B::BackPayload;
+    type PublishPayload = B::InitialPayload;
 }
 
 impl<B: RpcCommBus> DirectBus for B {
@@ -52,22 +52,42 @@ pub enum Never {}
 
 #[derive(Debug)]
 /// A reply on an [RpcCommBus].
-pub struct CommReply<B> {
+pub struct BackReply<B> {
     _marker: PhantomData<B>,
 }
 
-impl<B: RpcCommBus> RpcCommBus for CommReply<B> {
+impl<B: RpcCommBus> Bus for BackReply<B> {
+    type PublishPayload = B::BackPayload;
+}
+
+impl<B: RpcCommBus> DirectBus for BackReply<B> {
     type Args = B::Args;
 
     fn queue(args: Self::Args) -> String {
         B::queue(args)
     }
+}
 
-    type InitialPayload = Never;
+impl<B: RpcCommBus> RpcBus for BackReply<B> {
+    type ReplyPayload = B::ForthPayload;
+}
 
-    type BackPayload = B::ForthPayload;
+#[derive(Debug)]
+/// A reply on an [RpcCommBus].
+pub struct ForthReply<B> {
+    _marker: PhantomData<B>,
+}
 
-    type ForthPayload = B::BackPayload;
+impl<B: RpcCommBus> Bus for ForthReply<B> {
+    type PublishPayload = B::ForthPayload;
+}
+
+impl<B: RpcCommBus> DirectBus for ForthReply<B> {
+    type Args = B::Args;
+
+    fn queue(args: Self::Args) -> String {
+        B::queue(args)
+    }
 }
 
 impl RpcChannel {
@@ -124,7 +144,7 @@ where
         &self,
         args: B::Args,
         payload: &B::InitialPayload,
-    ) -> Result<impl Stream<Item = Delivery<B>>> {
+    ) -> Result<impl Stream<Item = Delivery<BackReply<B>>>> {
         let correlation_uuid = Uuid::new_v4();
         let (tx, rx) = mpsc::unbounded_channel();
 
@@ -148,6 +168,7 @@ where
 impl<'i, 'b, 'f, B> Delivery<B>
 where
     B: RpcCommBus,
+    B::InitialPayload: Deserialize<'b> + Serialize,
     B::BackPayload: Deserialize<'b> + Serialize,
     B::ForthPayload: Deserialize<'f> + Serialize,
 {
@@ -180,7 +201,7 @@ where
         &self,
         back_payload: &B::BackPayload,
         rpc_chan: &RpcChannel,
-    ) -> Result<impl Stream<Item = Delivery<CommReply<B>>>> {
+    ) -> Result<impl Stream<Item = Delivery<ForthReply<B>>>> {
         let Some(correlation_uuid) = self.get_uuid() else {
             return Err(Error::Reply(ReplyError::NoCorrelationUuid));
         };
@@ -214,28 +235,18 @@ where
     /// Reply to a message that was sent by the receiver of the initial message and await
     /// one reply from the receiver.
     /// The message can be obtained by `await`ing the returned [Future].
+    #[must_use]
     pub async fn reply_recv(
         &self,
         back_payload: &B::BackPayload,
         rpc_chan: &RpcChannel,
-    ) -> Result<impl Future<Output = Delivery<CommReply<B>>>> {
+    ) -> Result<impl Future<Output = Delivery<ForthReply<B>>>> {
         let rx = self.reply_recv_many(back_payload, rpc_chan).await?;
         Ok(async move {
             // As `rx` won't be dropped, we can assume that either
             // this future never resolves, or it resolves to a `Some`
             rx.take(1).next().await.unwrap()
         })
-    }
-
-    /// Convert this [Delivery] into a [DynRpcDelivery]
-    pub fn into_dyn_comm(self) -> DynRpcDelivery<B::BackPayload, B::ForthPayload> {
-        DynRpcDelivery {
-            inner: crate::DynDelivery {
-                inner: self.inner,
-                _marker: PhantomData,
-            },
-            _reply: PhantomData,
-        }
     }
 }
 

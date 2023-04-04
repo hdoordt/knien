@@ -72,14 +72,6 @@ where
         }
         Ok(())
     }
-
-    /// Convert this [Delivery] into a [DynDelivery]
-    pub fn into_dyn(self) -> DynDelivery<B::PublishPayload> {
-        DynDelivery {
-            inner: self.inner,
-            _marker: PhantomData,
-        }
-    }
 }
 
 impl<B> From<lapin::message::Delivery> for Delivery<B> {
@@ -96,30 +88,4 @@ fn delivery_uuid(delivery: &lapin::message::Delivery) -> Option<Result<Uuid>> {
         return None;
     };
     Some(Uuid::from_str(correlation_id.as_str()).map_err(Into::into))
-}
-
-#[derive(Debug)]
-/// A Delivery that is not tied to a [Bus], but instead is generic over
-/// the publish payload of the [Bus] associated with the [Delivery]
-/// it was converted from. It can be used to combine [Delivery]s that originate from different
-/// [Bus]es, that have identical `PublishPayload` types defined,
-/// and allow for deserializing the `PublishPayload`
-pub struct DynDelivery<P> {
-    inner: lapin::message::Delivery,
-    _marker: PhantomData<P>,
-}
-
-impl<'dp, P> DynDelivery<P>
-where
-    P: Deserialize<'dp> + Serialize,
-{
-    /// Get the message correlation [Uuid]
-    pub fn get_uuid(&self) -> Option<Result<Uuid>> {
-        delivery_uuid(&self.inner)
-    }
-
-    /// Deserialize and return the payload from the [DynDelivery]
-    pub fn get_payload(&'dp self) -> Result<P> {
-        Ok(serde_json::from_slice(&self.inner.data)?)
-    }
 }
