@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::{
     error::Error, Bus, Channel, Consumer, Delivery, DirectBus, DynRpcDelivery, Publisher,
-    ReplyError, Result, RpcChannel,
+    ReplyError, Result, RpcChannel, RpcBus,
 };
 
 use super::ReplyReceiver;
@@ -35,7 +35,7 @@ pub trait RpcCommBus {
 }
 
 impl<B: RpcCommBus> Bus for B {
-    type PublishPayload = B::BackPayload;
+    type PublishPayload = B::InitialPayload;
 }
 
 impl<B: RpcCommBus> DirectBus for B {
@@ -56,18 +56,20 @@ pub struct CommReply<B> {
     _marker: PhantomData<B>,
 }
 
-impl<B: RpcCommBus> RpcCommBus for CommReply<B> {
+impl <B: RpcCommBus> Bus for CommReply<B> {
+    type PublishPayload = B::BackPayload;
+}
+
+impl <B: RpcCommBus> DirectBus for CommReply<B> {
     type Args = B::Args;
 
     fn queue(args: Self::Args) -> String {
         B::queue(args)
     }
+}
 
-    type InitialPayload = Never;
-
-    type BackPayload = B::ForthPayload;
-
-    type ForthPayload = B::BackPayload;
+impl<B: RpcCommBus> RpcBus for CommReply<B> {
+    type ReplyPayload = B::ForthPayload;
 }
 
 impl RpcChannel {
@@ -124,7 +126,7 @@ where
         &self,
         args: B::Args,
         payload: &B::InitialPayload,
-    ) -> Result<impl Stream<Item = Delivery<B>>> {
+    ) -> Result<impl Stream<Item = Delivery<CommReply<B>>>> {
         let correlation_uuid = Uuid::new_v4();
         let (tx, rx) = mpsc::unbounded_channel();
 
@@ -148,6 +150,7 @@ where
 impl<'i, 'b, 'f, B> Delivery<B>
 where
     B: RpcCommBus,
+    B::InitialPayload: Deserialize<'b> + Serialize,
     B::BackPayload: Deserialize<'b> + Serialize,
     B::ForthPayload: Deserialize<'f> + Serialize,
 {
