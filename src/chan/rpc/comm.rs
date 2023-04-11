@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::{
     error::Error, Bus, Channel, Consumer, Delivery, DirectBus, Publisher, ReplyError, Result,
-    RpcBus, RpcChannel, Reply,
+    RpcBus, RpcChannel,
 };
 
 use super::ReplyReceiver;
@@ -235,7 +235,6 @@ where
     /// Reply to a message that was sent by the receiver of the initial message and await
     /// one reply from the receiver.
     /// The message can be obtained by `await`ing the returned [Future].
-    #[must_use]
     pub async fn reply_recv(
         &self,
         back_payload: &B::BackPayload,

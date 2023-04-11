@@ -10,7 +10,7 @@ use tokio::{
     sync::mpsc,
     task::{self, JoinHandle},
 };
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 use uuid::Uuid;
 
 use crate::{delivery_uuid, error::Error, Bus, Connection, Delivery, Result};
@@ -96,12 +96,16 @@ impl RpcChannel {
                             let forward_reply: JoinHandle<()> = task::spawn_blocking({
                                 let pending_replies = pending_replies.clone();
                                 move || {
-                                    let Some(msg_id) = delivery_uuid(&msg) else {
-                                            todo!("report abcense of uuid");
-                                        };
-                                    let msg_id = match msg_id {
-                                        Ok(i) => i,
-                                        Err(_) => todo!("report error"),
+                                    let msg_id = match delivery_uuid(&msg) {
+                                        Some(Ok(i)) => i,
+                                        Some(Err(e)) => {
+                                            error!("Error parsing reply message correlation UUID: {e:?}. Dropping message.");
+                                            return;
+                                        }
+                                        None => {
+                                            error!("Received reply with nog correlation ID. Dropping message.");
+                                            return;
+                                        }
                                     };
 
                                     let forwarding_success =
