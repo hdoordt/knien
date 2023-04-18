@@ -114,7 +114,7 @@ impl RpcChannel {
                                         } else {
                                             false
                                         };
-                                    if forwarding_success {
+                                    if !forwarding_success {
                                         warn!("Received reply cannot be forwarded due to dropped Receiver. UUID: {}", msg_id);
                                     }
                                 }
