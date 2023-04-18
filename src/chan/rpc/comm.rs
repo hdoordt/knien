@@ -159,7 +159,7 @@ where
 
         let properties = BasicProperties::default().with_reply_to("amq.rabbitmq.reply-to".into());
         debug!("Publishing message with correlation UUID {correlation_uuid}, setting up back-and-forth communication");
-        self.publish_with_properties(&B::queue(args), payload, properties, correlation_uuid)
+        self.publish_with_properties(&B::queue(args), payload, properties, correlation_uuid, None)
             .await?;
         Ok(rx)
     }
@@ -185,13 +185,20 @@ where
             return Err(Error::Reply(ReplyError::NoReplyToConfigured))
         };
 
-        let correlation_uuid = correlation_uuid?;
+        let reply_uuid = correlation_uuid?;
 
         let bytes = serde_json::to_vec(forth_payload)?;
 
-        debug!("Replying forth to message with correlation UUID {correlation_uuid}");
-        chan.publish_with_properties(&bytes, reply_to, Default::default(), correlation_uuid)
-            .await
+        debug!("Replying forth to message with correlation UUID {reply_uuid}");
+        let correlation_uuid = Uuid::new_v4();
+        chan.publish_with_properties(
+            &bytes,
+            reply_to,
+            Default::default(),
+            correlation_uuid,
+            Some(reply_uuid),
+        )
+        .await
     }
 
     /// Reply to a message that was sent by the receiver of the initial message and await
@@ -210,24 +217,31 @@ where
         };
 
         let bytes = serde_json::to_vec(back_payload)?;
-        let correlation_uuid = correlation_uuid?;
+        let reply_uuid = correlation_uuid?;
 
         let (tx, rx) = mpsc::unbounded_channel();
 
         let rx = ReplyReceiver {
-            correlation_uuid,
+            correlation_uuid: reply_uuid,
             inner: rx,
             chan: Some(rpc_chan.clone()),
             _marker: PhantomData,
         };
 
-        rpc_chan.register_pending_reply(correlation_uuid, tx);
+        rpc_chan.register_pending_reply(reply_uuid, tx);
 
         let properties = BasicProperties::default().with_reply_to("amq.rabbitmq.reply-to".into());
 
-        debug!("Replying back to message with correlation UUID {correlation_uuid}");
+        debug!("Replying back to message with correlation UUID {reply_uuid}");
+        let correlation_uuid = Uuid::new_v4();
         rpc_chan
-            .publish_with_properties(&bytes, reply_to, properties, correlation_uuid)
+            .publish_with_properties(
+                &bytes,
+                reply_to,
+                properties,
+                correlation_uuid,
+                Some(reply_uuid),
+            )
             .await?;
         Ok(rx)
     }

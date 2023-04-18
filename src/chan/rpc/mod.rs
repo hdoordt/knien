@@ -13,7 +13,7 @@ use tokio::{
 use tracing::{debug, error, warn};
 use uuid::Uuid;
 
-use crate::{delivery_uuid, error::Error, Bus, Connection, Delivery, Result};
+use crate::{delivery_uuid, error::Error, fmt_correlation_id, Bus, Connection, Delivery, Result};
 
 use super::{direct::DirectBus, Channel, Consumer, Publisher};
 
@@ -96,7 +96,7 @@ impl RpcChannel {
                             let forward_reply: JoinHandle<()> = task::spawn_blocking({
                                 let pending_replies = pending_replies.clone();
                                 move || {
-                                    let msg_id = match delivery_uuid(&msg) {
+                                    let reply_id = match delivery_uuid(&msg, 1) {
                                         Some(Ok(i)) => i,
                                         Some(Err(e)) => {
                                             error!("Error parsing reply message correlation UUID: {e:?}. Dropping message.");
@@ -109,13 +109,13 @@ impl RpcChannel {
                                     };
 
                                     let forwarding_success =
-                                        if let Some(tx) = pending_replies.get(&msg_id) {
+                                        if let Some(tx) = pending_replies.get(&reply_id) {
                                             tx.send(msg).is_ok()
                                         } else {
                                             false
                                         };
                                     if forwarding_success {
-                                        warn!("Received reply cannot be forwarded due to dropped Receiver. UUID: {}", msg_id);
+                                        warn!("Received reply cannot be forwarded due to dropped Receiver. UUID: {}", reply_id);
                                     }
                                 }
                             });
@@ -196,8 +196,10 @@ impl Channel for RpcChannel {
         routing_key: &str,
         properties: lapin::BasicProperties,
         correlation_uuid: Uuid,
+        reply_uuid: Option<Uuid>,
     ) -> Result<()> {
-        let properties = properties.with_correlation_id(correlation_uuid.to_string().into());
+        let correlation_id = fmt_correlation_id(correlation_uuid, reply_uuid);
+        let properties = properties.with_correlation_id(correlation_id.into());
 
         debug!("Publishing message with correlation UUID {correlation_uuid} an RPC channel with routing key {routing_key}");
         self.inner
@@ -242,7 +244,7 @@ where
         let properties = BasicProperties::default().with_reply_to("amq.rabbitmq.reply-to".into());
 
         debug!("Publishing message with correlation UUID {correlation_uuid}, expecting one or more replies");
-        self.publish_with_properties(&B::queue(args), payload, properties, correlation_uuid)
+        self.publish_with_properties(&B::queue(args), payload, properties, correlation_uuid, None)
             .await?;
         Ok(rx)
     }
@@ -274,13 +276,20 @@ where
             return Err(Error::Reply(ReplyError::NoReplyToConfigured))
         };
 
-        let correlation_uuid = correlation_uuid?;
+        let reply_uuid = correlation_uuid?;
 
         let bytes = serde_json::to_vec(reply_payload)?;
 
-        debug!("Replying to message with correlation UUID {correlation_uuid}");
-        chan.publish_with_properties(&bytes, reply_to, Default::default(), correlation_uuid)
-            .await
+        debug!("Replying to message with correlation UUID {reply_uuid}");
+        let correlation_uuid = Uuid::new_v4();
+        chan.publish_with_properties(
+            &bytes,
+            reply_to,
+            Default::default(),
+            correlation_uuid,
+            Some(reply_uuid),
+        )
+        .await
     }
 }
 
