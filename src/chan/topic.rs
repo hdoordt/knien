@@ -101,11 +101,10 @@ impl<E: TopicExchange> TopicChannel<E> {
     }
 
     /// Create a new [Publisher] that publishes onto the [TopicBus].
-    pub fn publisher<B: TopicBus>(&self) -> Publisher<Self, B> {
+    pub fn publisher<B: TopicBus<Chan = Self>>(&self) -> Publisher<B> {
         debug!("Created publisher for topic bus {}", type_name::<B>());
         Publisher {
             chan: self.clone(),
-            _marker: PhantomData,
         }
     }
 }
@@ -138,9 +137,8 @@ impl<E: TopicExchange> Channel for TopicChannel<E> {
     }
 }
 
-impl<'p, E, B> Publisher<TopicChannel<E>, B>
+impl<'p, B> Publisher< B>
 where
-    E: TopicExchange,
     B: TopicBus,
     B::PublishPayload: Deserialize<'p> + Serialize,
 {
@@ -330,7 +328,7 @@ mod tests {
         });
 
         let channel: TopicChannel<MyExchange> = TopicChannel::new(&connection).await.unwrap();
-        let publisher: Publisher<_, MyTopic> = channel.publisher();
+        let publisher: Publisher<MyTopic> = channel.publisher();
 
         publisher
             .publish_topic(
@@ -434,12 +432,11 @@ macro_rules! topic_exchange {
 /// Declare a new [TopicBus].
 macro_rules! topic_bus {
     ($doc:literal, $bus:ident, $publish_payload:ty, $exchange:ty, $topic:literal) => {
-        $crate::bus!($bus, $publish_payload);
+        $crate::bus!($doc, $bus);
 
-        impl $crate::TopicBus for $bus {
-            type Exchange = $exchange;
-            const TOPIC_PATTERN: &'static str = $topic;
-        }
+        $crate::bus_impl!($bus, TopicChannel<$exchange>, $publish_payload);
+
+        $crate::topic_bus_impl!($bus, $exchange, $topic);
     };
     (doc = $doc:literal, bus = $bus:ident, publish = $publish_payload:ty, exchange = $exchange:ty, topic = $topic:literal) => {
         $crate::topic_bus!($doc, $bus, $publish_payload, $exchange, $topic);
@@ -449,5 +446,16 @@ macro_rules! topic_bus {
     };
     (bus = $bus:ident, publish = $publish_payload:ty, exchange = $exchange:ty, topic = $topic:literal) => {
         $crate::topic_bus!($bus, $publish_payload, $exchange, $topic);
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! topic_bus_impl {
+    ($bus:ident, $exchange:ty, $topic:literal) => {
+        impl $crate::TopicBus for $bus {
+            type Exchange = $exchange;
+            const TOPIC_PATTERN: &'static str = $topic;
+        }
     };
 }

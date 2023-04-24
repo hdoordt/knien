@@ -35,6 +35,7 @@ pub trait RpcCommBus: Unpin {
 }
 
 impl<B: RpcCommBus> Bus for B {
+    type Chan = RpcChannel;
     type PublishPayload = B::InitialPayload;
 }
 
@@ -46,7 +47,7 @@ impl<B: RpcCommBus> DirectBus for B {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[doc(hidden)]
 pub enum Never {}
 
@@ -57,6 +58,7 @@ pub struct BackReply<B> {
 }
 
 impl<B: RpcCommBus> Bus for BackReply<B> {
+    type Chan = RpcChannel;
     type PublishPayload = B::BackPayload;
 }
 
@@ -79,6 +81,7 @@ pub struct ForthReply<B> {
 }
 
 impl<B: RpcCommBus> Bus for ForthReply<B> {
+    type Chan = RpcChannel;
     type PublishPayload = B::ForthPayload;
 }
 
@@ -120,16 +123,15 @@ impl RpcChannel {
     }
 
     /// Setup a new [Publisher] associated wit the [RpcCommBus].
-    pub fn comm_publisher<B: RpcCommBus>(&self) -> Publisher<Self, B> {
+    pub fn comm_publisher<B: RpcCommBus>(&self) -> Publisher<B> {
         debug!("Created comm publisher for RPC bus {}", type_name::<B>());
         Publisher {
             chan: self.clone(),
-            _marker: PhantomData,
         }
     }
 }
 
-impl<'r, 'p, B> Publisher<RpcChannel, B>
+impl<'r, 'p, B> Publisher<B>
 where
     B: RpcCommBus,
     B::InitialPayload: Deserialize<'r> + Serialize,
@@ -280,17 +282,7 @@ macro_rules! rpc_comm_bus {
         #[derive(Clone, Copy, Debug)]
         pub enum $bus {}
 
-        impl $crate::RpcCommBus for $bus {
-            type InitialPayload = $initial_payload;
-            type BackPayload = $back_payload;
-            type ForthPayload = $forth_payload;
-            type Args = $args;
-
-            fn queue(args: Self::Args) -> String {
-                #[allow(clippy::redundant_closure_call)]
-                ($queue)(args)
-            }
-        }
+        $crate::rpc_comm_bus_impl!($bus, $initial_payload, $back_payload, $forth_payload, $args, $queue);
     };
     (doc = $doc:literal, bus = $bus:ident, initial = $initial_payload:ty, back = $back_payload:ty, forth = $forth_payload:ty, args = $args:ty, queue = $queue:expr) => {
         $crate::rpc_comm_bus!(
@@ -323,5 +315,23 @@ macro_rules! rpc_comm_bus {
             $args,
             $queue
         );
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! rpc_comm_bus_impl {
+    ($bus:ty, $back_payload:ty, $initial_payload:ty, $forth_payload:ty, $args:ty, $queue:expr) => {
+        impl $crate::RpcCommBus for $bus {
+            type InitialPayload = $initial_payload;
+            type BackPayload = $back_payload;
+            type ForthPayload = $forth_payload;
+            type Args = $args;
+
+            fn queue(args: Self::Args) -> String {
+                #[allow(clippy::redundant_closure_call)]
+                ($queue)(args)
+            }
+        }
     };
 }

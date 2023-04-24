@@ -22,6 +22,8 @@ pub use topic::*;
 
 /// A Bus. Base trait for several other buses
 pub trait Bus: Unpin {
+    /// The [Channel] this bus is associated with.
+    type Chan: Channel;
     /// The type of payload of the messages that are published on or consumed from it.
     type PublishPayload;
 }
@@ -72,14 +74,13 @@ where
 /// of the [Bus::PublishPayload] type. [Publisher]s take care
 /// of serializing the payloads before publishing.
 #[derive(Clone)]
-pub struct Publisher<C, B> {
-    chan: C,
-    _marker: PhantomData<B>,
+pub struct Publisher<B: Bus> {
+    chan: B::Chan,
 }
 
-impl<C, B> Publisher<C, B>
+impl<B> Publisher<B>
 where
-    C: Channel,
+    B: Bus,
 {
     async fn publish_with_properties<'p, P>(
         &self,
@@ -110,9 +111,12 @@ pub use tests::*;
 
 #[cfg(test)]
 mod tests {
+    use async_trait::async_trait;
+    use lapin::BasicProperties;
     use serde::{Deserialize, Serialize};
+    use uuid::Uuid;
 
-    use crate::bus;
+    use crate::{bus, bus_impl, Channel, Never};
 
     pub const RABBIT_MQ_URL: &str = "amqp://tg:secret@localhost:5673";
 
@@ -121,22 +125,44 @@ mod tests {
         pub message: String,
     }
 
-    bus!("A frame bus", FrameBus, FramePayload);
+    #[async_trait]
+    impl Channel for Never {
+        async fn publish_with_properties(
+            &self,
+            _payload_bytes: &[u8],
+            _routing_key: &str,
+            _properties: BasicProperties,
+            _correlation_uuid: Uuid,
+            _reply_uuid: Option<Uuid>,
+        ) -> crate::Result<()> {
+            unreachable!()
+        }
+    }
+
+    bus!("A frame bus", FrameBus);
+    bus_impl!(FrameBus, Never, FramePayload);
 }
 
 #[doc(hidden)]
 #[macro_export]
 macro_rules! bus {
-    ($doc:literal, $name:ident, $publish_payload:ty) => {
+    ($doc:literal, $bus:ident) => {
         #[doc = $doc]
         #[derive(Clone, Copy, Debug)]
-        pub enum $name {}
+        pub enum $bus {}
+    };
+    ($bus:ident) => {
+        $crate::bus!("", $bus);
+    };
+}
 
-        impl $crate::Bus for $name {
+#[doc(hidden)]
+#[macro_export]
+macro_rules! bus_impl {
+    ($bus:ident, $chan:ty, $publish_payload:ty) => {
+        impl $crate::Bus for $bus {
+            type Chan = $chan;
             type PublishPayload = $publish_payload;
         }
-    };
-    ($name:ident, $publish_payload:ty) => {
-        $crate::bus!("", $name, $publish_payload);
     };
 }

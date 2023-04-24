@@ -42,6 +42,7 @@ pub struct Reply<B> {
 }
 
 impl<B: RpcBus> Bus for Reply<B> {
+    type Chan = RpcChannel;
     type PublishPayload = B::ReplyPayload;
 }
 
@@ -177,11 +178,10 @@ impl RpcChannel {
     }
 
     /// Create a new [Publisher] that allows for publishing on the [RpcBus]
-    pub fn publisher<B: RpcBus>(&self) -> Publisher<Self, B> {
+    pub fn publisher<B: RpcBus<Chan = Self>>(&self) -> Publisher<B> {
         debug!("Created publisher for RPC bus {}", type_name::<B>());
         Publisher {
             chan: self.clone(),
-            _marker: PhantomData,
         }
     }
 }
@@ -214,9 +214,9 @@ impl Channel for RpcChannel {
     }
 }
 
-impl<'r, 'p, B> Publisher<RpcChannel, B>
+impl<'r, 'p, B> Publisher<B>
 where
-    B: RpcBus,
+    B: RpcBus<Chan = RpcChannel>,
     B::PublishPayload: Deserialize<'p> + Serialize,
     B::ReplyPayload: Deserialize<'r> + Serialize,
 {
@@ -398,7 +398,7 @@ mod tests {
         });
 
         let channel = RpcChannel::new(&connection).await.unwrap();
-        let publisher: Publisher<_, FrameBus> = channel.publisher();
+        let publisher: Publisher<FrameBus> = channel.publisher();
 
         let mut rx = publisher
             .publish_recv_many(
@@ -437,7 +437,7 @@ mod tests {
         });
 
         let channel = RpcChannel::new(&connection).await.unwrap();
-        let publisher: Publisher<_, FrameBus> = channel.publisher();
+        let publisher: Publisher<FrameBus> = channel.publisher();
 
         let fut = publisher
             .publish_recv_one(
@@ -459,11 +459,13 @@ mod tests {
 /// Declare a new [RpcBus].
 macro_rules! rpc_bus {
     ($doc:literal, $bus:ident, $publish_payload:ty, $reply_payload:ty, $args:ty, $queue:expr) => {
-        $crate::direct_bus!($doc, $bus, $publish_payload, $args, $queue);
+        $crate::bus!($doc, $bus);
 
-        impl $crate::RpcBus for $bus {
-            type ReplyPayload = $reply_payload;
-        }
+        $crate::bus_impl!($bus, $crate::RpcChannel, $publish_payload);
+
+        $crate::direct_bus_impl!($bus, $args, $queue);
+
+        $crate::rpc_bus_impl!($bus, $reply_payload);
     };
     (doc = $doc:literal, bus = $bus:ident, publish = $publish_payload:ty, reply = $reply_payload:ty, args = $args:ty, queue = $queue:expr) => {
         $crate::rpc_bus!($doc, $bus, $publish_payload, $reply_payload, $args, $queue);
@@ -473,5 +475,15 @@ macro_rules! rpc_bus {
     };
     (bus = $bus:ident, publish = $publish_payload:ty, reply = $reply_payload:ty, args = $args:ty, queue = $queue:expr) => {
         $crate::rpc_bus!($bus, $publish_payload, $reply_payload, $args, $queue);
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! rpc_bus_impl {
+    ($bus:ident, $reply_payload:ty) => {
+        impl $crate::RpcBus for $bus {
+            type ReplyPayload = $reply_payload;
+        }
     };
 }

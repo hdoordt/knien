@@ -61,16 +61,15 @@ impl DirectChannel {
     }
 
     /// Create a new [Publisher] that allows for publishing on the [DirectBus]
-    pub fn publisher<B: DirectBus>(&self) -> Publisher<Self, B> {
+    pub fn publisher<B: DirectBus<Chan = DirectChannel>>(&self) -> Publisher<B> {
         debug!("Created publisher for direct bus {}", type_name::<B>());
         Publisher {
             chan: self.clone(),
-            _marker: PhantomData,
         }
     }
 }
 
-impl<'p, B> Publisher<DirectChannel, B>
+impl<'p, B> Publisher<B>
 where
     B: DirectBus,
     B::PublishPayload: Deserialize<'p> + Serialize,
@@ -159,7 +158,7 @@ pub mod tests {
         });
 
         let channel = DirectChannel::new(&connection).await.unwrap();
-        let publisher: Publisher<_, FrameBus> = channel.publisher();
+        let publisher: Publisher<FrameBus> = channel.publisher();
 
         publisher
             .publish(
@@ -181,16 +180,11 @@ pub mod tests {
 #[macro_export]
 macro_rules! direct_bus {
     ($doc:literal, $bus:ident, $publish_payload:ty, $args:ty, $queue:expr) => {
-        $crate::bus!($doc, $bus, $publish_payload);
+        $crate::bus!($doc, $bus);
 
-        impl $crate::DirectBus for $bus {
-            type Args = $args;
+        $crate::bus_impl!($bus, $crate::DirectChannel, $publish_payload);
 
-            fn queue(args: Self::Args) -> String {
-                #[allow(clippy::redundant_closure_call)]
-                ($queue)(args)
-            }
-        }
+        $crate::direct_bus_impl!($bus, $args, $queue);
     };
     (doc = $doc:literal, bus = $bus:ident, publish = $publish_payload:ty, args = $args:ty, queue = $queue:expr) => {
         $crate::direct_bus!($doc, $bus, $publish_payload, $args, $queue);
@@ -200,5 +194,20 @@ macro_rules! direct_bus {
     };
     (bus = $bus:ident, publish = $publish_payload:ty, args = $args:ty, queue = $queue:expr) => {
         $crate::direct_bus!($bus, $publish_payload, $args, $queue);
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! direct_bus_impl {
+    ($bus:ident, $args:ty, $queue:expr) => {
+        impl $crate::DirectBus for $bus {
+            type Args = $args;
+
+            fn queue(args: Self::Args) -> String {
+                #[allow(clippy::redundant_closure_call)]
+                ($queue)(args)
+            }
+        }
     };
 }
