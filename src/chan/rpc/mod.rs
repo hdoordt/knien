@@ -216,7 +216,7 @@ impl Channel for RpcChannel {
 
 impl<'r, 'p, B> Publisher<RpcChannel, B>
 where
-    B: RpcBus + Unpin,
+    B: RpcBus,
     B::PublishPayload: Deserialize<'p> + Serialize,
     B::ReplyPayload: Deserialize<'r> + Serialize,
 {

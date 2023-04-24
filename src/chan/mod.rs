@@ -21,7 +21,7 @@ pub use rpc::*;
 pub use topic::*;
 
 /// A Bus. Base trait for several other buses
-pub trait Bus {
+pub trait Bus: Unpin {
     /// The type of payload of the messages that are published on or consumed from it.
     type PublishPayload;
 }
@@ -50,7 +50,7 @@ pub struct Consumer<B> {
 
 impl<'p, B> Stream for Consumer<B>
 where
-    B: Bus + Unpin,
+    B: Bus,
     B::PublishPayload: Deserialize<'p> + Serialize,
 {
     type Item = Result<Delivery<B>>;
@@ -61,7 +61,8 @@ where
     ) -> std::task::Poll<Option<Self::Item>> {
         let this = self.get_mut();
         // Adapt any `LapinDelivery`s to `Delivery<T>`
-        this.inner.poll_next_unpin(cx)
+        this.inner
+            .poll_next_unpin(cx)
             .map(|m| m.map(|m| m.map(Into::into).map_err(Into::into)))
     }
 }
