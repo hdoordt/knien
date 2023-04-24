@@ -132,10 +132,10 @@ impl RpcChannel {
 
 impl<'r, 'p, B> Publisher<RpcChannel, B>
 where
+    B: RpcCommBus + Unpin,
     B::InitialPayload: Deserialize<'r> + Serialize,
     B::BackPayload: Deserialize<'p> + Serialize,
     B::ForthPayload: Deserialize<'r> + Serialize,
-    B: RpcCommBus,
 {
     /// Publish an initial message onto the [RpcCommBus], and receive the replies with
     /// with [RpcCommBus::BackPayload] payloads onto the returned [Stream].
@@ -167,7 +167,7 @@ where
 
 impl<'i, 'b, 'f, B> Delivery<B>
 where
-    B: RpcCommBus,
+    B: RpcCommBus + Unpin,
     B::InitialPayload: Deserialize<'b> + Serialize,
     B::BackPayload: Deserialize<'b> + Serialize,
     B::ForthPayload: Deserialize<'f> + Serialize,

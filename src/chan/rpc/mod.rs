@@ -4,7 +4,6 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use futures::{Future, Stream, StreamExt};
 use lapin::{options::BasicConsumeOptions, BasicProperties};
-use pin_project::{pin_project, pinned_drop};
 use serde::{Deserialize, Serialize};
 use tokio::{
     sync::mpsc,
@@ -218,9 +217,9 @@ impl Channel for RpcChannel {
 
 impl<'r, 'p, B> Publisher<RpcChannel, B>
 where
+    B: RpcBus + Unpin,
     B::PublishPayload: Deserialize<'p> + Serialize,
     B::ReplyPayload: Deserialize<'r> + Serialize,
-    B: RpcBus,
 {
     /// Publish a message and await many replies. The replies
     /// can be obtained by calling [StreamExt::next] on the returned [Stream].
@@ -293,36 +292,29 @@ where
     }
 }
 
-#[pin_project(PinnedDrop)]
 struct ReplyReceiver<B> {
-    #[pin]
     correlation_uuid: Uuid,
-    #[pin]
     inner: mpsc::UnboundedReceiver<lapin::message::Delivery>,
-    #[pin]
     chan: Option<RpcChannel>,
     _marker: PhantomData<B>,
 }
 
-impl<B> Stream for ReplyReceiver<B> {
+impl<B: Unpin> Stream for ReplyReceiver<B> {
     type Item = Delivery<B>;
 
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        let mut this = self.project();
-        // Map `lapin::message::Delivery` items to `self::Delivery` items
+        let this = self.get_mut();
         this.inner.poll_recv(cx).map(|msg| msg.map(|m| m.into()))
     }
 }
 
-#[pinned_drop]
-impl<B> PinnedDrop for ReplyReceiver<B> {
-    fn drop(self: std::pin::Pin<&mut Self>) {
-        let mut this = self.project();
-        let chan = this.chan.take().unwrap();
-        let correlation_uuid = *this.correlation_uuid;
+impl<B> Drop for ReplyReceiver<B> {
+    fn drop(&mut self) {
+        let chan = self.chan.take().unwrap();
+        let correlation_uuid = self.correlation_uuid;
         debug!(
             "Closed reply receiver for correlation UUID {correlation_uuid} and RPC bus {}",
             type_name::<B>()
