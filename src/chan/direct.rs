@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use tracing::debug;
 use uuid::Uuid;
 
-use crate::{Bus, Connection, Result};
+use crate::{fmt_correlation_id, Bus, Connection, Result};
 
 use super::{Channel, Consumer, Publisher};
 
@@ -85,6 +85,7 @@ where
             payload,
             Default::default(),
             correlation_uuid,
+            None,
         )
         .await
     }
@@ -98,8 +99,10 @@ impl Channel for DirectChannel {
         routing_key: &str,
         properties: lapin::BasicProperties,
         correlation_uuid: Uuid,
+        reply_uuid: Option<Uuid>,
     ) -> Result<()> {
-        let properties = properties.with_correlation_id(correlation_uuid.to_string().into());
+        let correlation_id = fmt_correlation_id(correlation_uuid, reply_uuid);
+        let properties = properties.with_correlation_id(correlation_id.into());
 
         debug!("Publishing message with correlation UUID {correlation_uuid} a direct channel with routing key {routing_key}");
         self.inner

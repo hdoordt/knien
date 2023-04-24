@@ -37,6 +37,7 @@ pub trait Channel: Clone {
         routing_key: &str,
         properties: BasicProperties,
         correlation_uuid: Uuid,
+        reply_uuid: Option<Uuid>,
     ) -> Result<()>;
 }
 
@@ -91,13 +92,20 @@ where
         payload: &P,
         properties: BasicProperties,
         correlation_uuid: Uuid,
+        reply_uuid: Option<Uuid>,
     ) -> Result<()>
     where
         P: Deserialize<'p> + Serialize,
     {
         let bytes = serde_json::to_vec(payload)?;
         self.chan
-            .publish_with_properties(&bytes, routing_key, properties, correlation_uuid)
+            .publish_with_properties(
+                &bytes,
+                routing_key,
+                properties,
+                correlation_uuid,
+                reply_uuid,
+            )
             .await
     }
 }

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use tracing::debug;
 use uuid::Uuid;
 
-use crate::{Bus, Channel, Connection, Consumer, Publisher, Result};
+use crate::{fmt_correlation_id, Bus, Channel, Connection, Consumer, Publisher, Result};
 
 /// A Topic Exchange
 pub trait TopicExchange: Clone + Send + Sync {
@@ -119,8 +119,10 @@ impl<E: TopicExchange> Channel for TopicChannel<E> {
         routing_key: &str,
         properties: lapin::BasicProperties,
         correlation_uuid: Uuid,
+        reply_uuid: Option<Uuid>,
     ) -> Result<()> {
-        let properties = properties.with_correlation_id(correlation_uuid.to_string().into());
+        let correlation_id = fmt_correlation_id(correlation_uuid, reply_uuid);
+        let properties = properties.with_correlation_id(correlation_id.into());
 
         debug!("Publishing message with correlation UUID {correlation_uuid} on Topic Exchange '{}' with routing key {routing_key}", E::NAME);
         self.inner
@@ -155,6 +157,7 @@ where
             payload,
             Default::default(),
             correlation_uuid,
+            None,
         )
         .await
     }
@@ -380,7 +383,7 @@ mod tests {
     #[test_case("frame.**.#"; "Double '*' 3")]
     #[test_case("frame.##"; "Double '#'4")]
     #[test_case("*"; "More abstract than pattern 5")]
-    // RabbbitMQ accepts this, but it would result in consumption of all messages on the topic exchange
+    // RabbitMQ accepts this, but it would result in consumption of all messages on the topic exchange
     #[test_case("#"; "Hash 6")]
     #[test_case("*.*.*"; "More abstract than pattern 7")]
     #[test_case("frame.*.*.*"; "Too long 8")]

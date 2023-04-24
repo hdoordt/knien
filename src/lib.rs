@@ -50,7 +50,13 @@ where
 
     /// Get the message correlation [Uuid]
     pub fn get_uuid(&self) -> Option<Result<Uuid>> {
-        delivery_uuid(&self.inner)
+        delivery_uuid(&self.inner, 0)
+    }
+
+    /// Get the correlation [Uuid] of the message this message
+    /// is a reply to
+    pub fn get_reply_uuid(&self) -> Option<Result<Uuid>> {
+        delivery_uuid(&self.inner, 1)
     }
 
     /// Ack the message
@@ -83,9 +89,19 @@ impl<B> From<lapin::message::Delivery> for Delivery<B> {
     }
 }
 
-fn delivery_uuid(delivery: &lapin::message::Delivery) -> Option<Result<Uuid>> {
+fn delivery_uuid(delivery: &lapin::message::Delivery, index: usize) -> Option<Result<Uuid>> {
     let Some(correlation_id) = delivery.properties.correlation_id() else {
         return None;
     };
-    Some(Uuid::from_str(correlation_id.as_str()).map_err(Into::into))
+    let mut parts = correlation_id.as_str().split(':');
+    parts
+        .nth(index)
+        .map(|uuid| Uuid::from_str(uuid).map_err(Into::into))
+}
+
+fn fmt_correlation_id(correlation_uuid: Uuid, reply_uuid: Option<Uuid>) -> String {
+    format!(
+        "{correlation_uuid}:{}",
+        reply_uuid.map(|r| r.to_string()).unwrap_or_default()
+    )
 }
