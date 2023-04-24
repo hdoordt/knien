@@ -1,9 +1,8 @@
 use std::marker::PhantomData;
 
 use async_trait::async_trait;
-use futures::Stream;
+use futures::{Stream, StreamExt};
 use lapin::BasicProperties;
-use pin_project::pin_project;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -44,18 +43,14 @@ pub trait Channel: Clone {
 /// A consumer associated with a [Channel] and a [Bus].
 /// [Consumer]s implement [futures::Stream], yielding [Delivery]s
 /// that are associated with the [Bus].
-#[pin_project]
-pub struct Consumer<C, B> {
-    chan: C,
-    #[pin]
+pub struct Consumer<B> {
     inner: lapin::Consumer,
     _marker: PhantomData<B>,
 }
 
-impl<'p, C, B> Stream for Consumer<C, B>
+impl<'p, B> Stream for Consumer<B>
 where
-    C: Channel,
-    B: Bus,
+    B: Bus + Unpin,
     B::PublishPayload: Deserialize<'p> + Serialize,
 {
     type Item = Result<Delivery<B>>;
@@ -64,10 +59,9 @@ where
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        let this = self.project();
+        let this = self.get_mut();
         // Adapt any `LapinDelivery`s to `Delivery<T>`
-        this.inner
-            .poll_next(cx)
+        this.inner.poll_next_unpin(cx)
             .map(|m| m.map(|m| m.map(Into::into).map_err(Into::into)))
     }
 }

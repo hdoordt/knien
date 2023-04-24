@@ -98,7 +98,7 @@ impl RpcChannel {
         &self,
         args: B::Args,
         consumer_tag: &str,
-    ) -> Result<Consumer<Self, B>> {
+    ) -> Result<Consumer<B>> {
         let queue = B::queue(args);
         self.inner
             .queue_declare(&queue, Default::default(), Default::default())
@@ -114,7 +114,6 @@ impl RpcChannel {
         );
 
         Ok(Consumer {
-            chan: self.clone(),
             inner: consumer,
             _marker: PhantomData,
         })

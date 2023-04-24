@@ -155,7 +155,7 @@ impl RpcChannel {
         &self,
         args: B::Args,
         consumer_tag: &str,
-    ) -> Result<Consumer<Self, B>> {
+    ) -> Result<Consumer<B>> {
         let queue = B::queue(args);
         self.inner
             .queue_declare(&queue, Default::default(), Default::default())
@@ -171,7 +171,6 @@ impl RpcChannel {
         );
 
         Ok(Consumer {
-            chan: self.clone(),
             inner: consumer,
             _marker: PhantomData,
         })
@@ -383,7 +382,7 @@ mod tests {
         let uuid = Uuid::new_v4();
         tokio::task::spawn({
             let channel = RpcChannel::new(&connection).await.unwrap();
-            let mut consumer: Consumer<_, FrameBus> =
+            let mut consumer: Consumer<FrameBus> =
                 channel.consumer(3, &Uuid::new_v4().to_string()).await?;
             async move {
                 let msg = consumer.next().await.unwrap().unwrap();
@@ -424,7 +423,7 @@ mod tests {
         let uuid = Uuid::new_v4();
         tokio::task::spawn({
             let channel = RpcChannel::new(&connection).await.unwrap();
-            let mut consumer: Consumer<_, FrameBus> =
+            let mut consumer: Consumer<FrameBus> =
                 channel.consumer(4, &Uuid::new_v4().to_string()).await?;
             async move {
                 let msg = consumer.next().await.unwrap().unwrap();

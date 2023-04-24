@@ -58,7 +58,7 @@ impl<E: TopicExchange> TopicChannel<E> {
         &self,
         routing_key: ConsumerRoutingKey<B>,
         consumer_tag: &str,
-    ) -> Result<Consumer<Self, B>> {
+    ) -> Result<Consumer<B>> {
         let queue = self
             .inner
             .queue_declare(
@@ -95,7 +95,6 @@ impl<E: TopicExchange> TopicChannel<E> {
             type_name::<B>()
         );
         Ok(Consumer {
-            chan: self.clone(),
             inner: consumer,
             _marker: PhantomData,
         })
@@ -318,7 +317,7 @@ mod tests {
         let (tx, rx) = oneshot::channel();
         tokio::task::spawn({
             let channel: TopicChannel<MyExchange> = TopicChannel::new(&connection).await.unwrap();
-            let mut consumer: Consumer<_, MyTopic> = channel
+            let mut consumer: Consumer<MyTopic> = channel
                 .consumer("frame.*.*".try_into().unwrap(), &Uuid::new_v4().to_string())
                 .await?;
             async move {
