@@ -18,7 +18,7 @@ use super::ReplyReceiver;
 /// a `BackPayload` and `ForthPayload`, and supports flows where a single
 /// initial message is sent, after which back-and-forth a communication
 /// over which multiple messages can be sent is setup.
-pub trait RpcCommBus {
+pub trait RpcCommBus: Unpin {
     /// The arguments used to format the queue
     type Args;
 
@@ -98,7 +98,7 @@ impl RpcChannel {
         &self,
         args: B::Args,
         consumer_tag: &str,
-    ) -> Result<Consumer<Self, B>> {
+    ) -> Result<Consumer<B>> {
         let queue = B::queue(args);
         self.inner
             .queue_declare(&queue, Default::default(), Default::default())
@@ -114,7 +114,6 @@ impl RpcChannel {
         );
 
         Ok(Consumer {
-            chan: self.clone(),
             inner: consumer,
             _marker: PhantomData,
         })
@@ -132,10 +131,10 @@ impl RpcChannel {
 
 impl<'r, 'p, B> Publisher<RpcChannel, B>
 where
+    B: RpcCommBus,
     B::InitialPayload: Deserialize<'r> + Serialize,
     B::BackPayload: Deserialize<'p> + Serialize,
     B::ForthPayload: Deserialize<'r> + Serialize,
-    B: RpcCommBus,
 {
     /// Publish an initial message onto the [RpcCommBus], and receive the replies with
     /// with [RpcCommBus::BackPayload] payloads onto the returned [Stream].

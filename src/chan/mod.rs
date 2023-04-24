@@ -1,9 +1,8 @@
 use std::marker::PhantomData;
 
 use async_trait::async_trait;
-use futures::Stream;
+use futures::{Stream, StreamExt};
 use lapin::BasicProperties;
-use pin_project::pin_project;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -22,7 +21,7 @@ pub use rpc::*;
 pub use topic::*;
 
 /// A Bus. Base trait for several other buses
-pub trait Bus {
+pub trait Bus: Unpin {
     /// The type of payload of the messages that are published on or consumed from it.
     type PublishPayload;
 }
@@ -44,17 +43,13 @@ pub trait Channel: Clone {
 /// A consumer associated with a [Channel] and a [Bus].
 /// [Consumer]s implement [futures::Stream], yielding [Delivery]s
 /// that are associated with the [Bus].
-#[pin_project]
-pub struct Consumer<C, B> {
-    chan: C,
-    #[pin]
+pub struct Consumer<B> {
     inner: lapin::Consumer,
     _marker: PhantomData<B>,
 }
 
-impl<'p, C, B> Stream for Consumer<C, B>
+impl<'p, B> Stream for Consumer<B>
 where
-    C: Channel,
     B: Bus,
     B::PublishPayload: Deserialize<'p> + Serialize,
 {
@@ -64,10 +59,10 @@ where
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        let this = self.project();
+        let this = self.get_mut();
         // Adapt any `LapinDelivery`s to `Delivery<T>`
         this.inner
-            .poll_next(cx)
+            .poll_next_unpin(cx)
             .map(|m| m.map(|m| m.map(Into::into).map_err(Into::into)))
     }
 }
