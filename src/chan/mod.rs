@@ -20,7 +20,14 @@ pub use rpc::*;
 #[cfg(feature = "topic")]
 pub use topic::*;
 
-/// A Bus. Base trait for several other buses
+/// A Bus. Base trait for several other buses.
+/// This trait is best implemented by using one of the `*_bus!` macros
+/// this crate provices.
+/// *If you are going to implement this trait manually, make sure you associate
+/// the correct [Channel] type to [Bus::Chan]:*
+/// - For [DirectBus], use [DirectChannel],
+/// - For [TopicBus], use [TopicChannel],
+/// - For [RpcBus] and [RpcCommBus], use [RpcCommBus].
 pub trait Bus: Unpin {
     /// The [Channel] this bus is associated with.
     type Chan: Channel;
