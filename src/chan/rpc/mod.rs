@@ -180,9 +180,7 @@ impl RpcChannel {
     /// Create a new [Publisher] that allows for publishing on the [RpcBus]
     pub fn publisher<B: RpcBus<Chan = Self>>(&self) -> Publisher<B> {
         debug!("Created publisher for RPC bus {}", type_name::<B>());
-        Publisher {
-            chan: self.clone(),
-        }
+        Publisher { chan: self.clone() }
     }
 }
 

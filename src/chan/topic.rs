@@ -103,9 +103,7 @@ impl<E: TopicExchange> TopicChannel<E> {
     /// Create a new [Publisher] that publishes onto the [TopicBus].
     pub fn publisher<B: TopicBus<Chan = Self>>(&self) -> Publisher<B> {
         debug!("Created publisher for topic bus {}", type_name::<B>());
-        Publisher {
-            chan: self.clone(),
-        }
+        Publisher { chan: self.clone() }
     }
 }
 
@@ -137,7 +135,7 @@ impl<E: TopicExchange> Channel for TopicChannel<E> {
     }
 }
 
-impl<'p, B> Publisher< B>
+impl<'p, B> Publisher<B>
 where
     B: TopicBus,
     B::PublishPayload: Deserialize<'p> + Serialize,

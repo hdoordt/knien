@@ -125,9 +125,7 @@ impl RpcChannel {
     /// Setup a new [Publisher] associated wit the [RpcCommBus].
     pub fn comm_publisher<B: RpcCommBus>(&self) -> Publisher<B> {
         debug!("Created comm publisher for RPC bus {}", type_name::<B>());
-        Publisher {
-            chan: self.clone(),
-        }
+        Publisher { chan: self.clone() }
     }
 }
 
@@ -282,7 +280,14 @@ macro_rules! rpc_comm_bus {
         #[derive(Clone, Copy, Debug)]
         pub enum $bus {}
 
-        $crate::rpc_comm_bus_impl!($bus, $initial_payload, $back_payload, $forth_payload, $args, $queue);
+        $crate::rpc_comm_bus_impl!(
+            $bus,
+            $initial_payload,
+            $back_payload,
+            $forth_payload,
+            $args,
+            $queue
+        );
     };
     (doc = $doc:literal, bus = $bus:ident, initial = $initial_payload:ty, back = $back_payload:ty, forth = $forth_payload:ty, args = $args:ty, queue = $queue:expr) => {
         $crate::rpc_comm_bus!(
