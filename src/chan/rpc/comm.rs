@@ -321,7 +321,7 @@ macro_rules! rpc_comm_bus {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! rpc_comm_bus_impl {
-    ($bus:ty, $back_payload:ty, $initial_payload:ty, $forth_payload:ty, $args:ty, $queue:expr) => {
+    ($bus:ty, $initial_payload:ty, $back_payload:ty, $forth_payload:ty, $args:ty, $queue:expr) => {
         impl $crate::RpcCommBus for $bus {
             type InitialPayload = $initial_payload;
             type BackPayload = $back_payload;
