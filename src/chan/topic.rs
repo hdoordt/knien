@@ -434,7 +434,7 @@ macro_rules! topic_bus {
     ($doc:literal, $bus:ident, $publish_payload:ty, $exchange:ty, $topic:literal) => {
         $crate::bus!($doc, $bus);
 
-        $crate::bus_impl!($bus, TopicChannel<$exchange>, $publish_payload);
+        $crate::bus_impl!($bus, $crate::TopicChannel<$exchange>, $publish_payload);
 
         $crate::topic_bus_impl!($bus, $exchange, $topic);
     };
