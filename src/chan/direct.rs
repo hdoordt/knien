@@ -10,7 +10,7 @@ use crate::{fmt_correlation_id, Bus, Connection, Result};
 use super::{Channel, Consumer, Publisher};
 
 /// A bus that allows publishing on a direct queue.
-pub trait DirectBus: Bus {
+pub trait DirectBus<'p>: Bus<'p> {
     /// The arguments used to format the queue
     type Args;
 
@@ -35,7 +35,7 @@ impl DirectChannel {
     /// Create a new [Consumer] for the [DirectBus] that declares
     /// a direct queue with the name produced by [DirectBus::queue]
     /// given the passed [DirectBus::Args]
-    pub async fn consumer<B: DirectBus>(
+    pub async fn consumer<'p, B: DirectBus<'p>>(
         &self,
         args: B::Args,
         consumer_tag: &str,
@@ -61,7 +61,7 @@ impl DirectChannel {
     }
 
     /// Create a new [Publisher] that allows for publishing on the [DirectBus]
-    pub fn publisher<B: DirectBus<Chan = DirectChannel>>(&self) -> Publisher<B> {
+    pub fn publisher<'p, B: DirectBus<'p, Chan = DirectChannel>>(&self) -> Publisher<'p, B> {
         debug!("Created publisher for direct bus {}", type_name::<B>());
         Publisher {
             chan: self.clone(),
@@ -69,10 +69,9 @@ impl DirectChannel {
     }
 }
 
-impl<'p, B> Publisher<B>
+impl<'p, B> Publisher<'p, B>
 where
-    B: DirectBus,
-    B::PublishPayload: Deserialize<'p> + Serialize,
+    B: DirectBus<'p>,
 {
     /// Publish a message onto a direct queue with the name produced by [DirectBus::queue]
     /// given the passed [DirectBus::Args]
@@ -201,7 +200,7 @@ macro_rules! direct_bus {
 #[macro_export]
 macro_rules! direct_bus_impl {
     ($bus:ident, $args:ty, $queue:expr) => {
-        impl $crate::DirectBus for $bus {
+        impl<'p> $crate::DirectBus<'p> for $bus {
             type Args = $args;
 
             fn queue(args: Self::Args) -> String {

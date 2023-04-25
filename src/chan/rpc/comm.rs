@@ -18,7 +18,7 @@ use super::ReplyReceiver;
 /// a `BackPayload` and `ForthPayload`, and supports flows where a single
 /// initial message is sent, after which back-and-forth a communication
 /// over which multiple messages can be sent is setup.
-pub trait RpcCommBus: Unpin {
+pub trait RpcCommBus<'i, 'b, 'f>: Unpin {
     /// The arguments used to format the queue
     type Args;
 
@@ -26,20 +26,20 @@ pub trait RpcCommBus: Unpin {
     fn queue(args: Self::Args) -> String;
 
     /// The type of payload of the message that is initally sent onto the bus
-    type InitialPayload;
+    type InitialPayload: Serialize + Deserialize<'i>;
 
     /// The type of payload of the messages that the receiver of the initial message sends back
-    type BackPayload;
+    type BackPayload: Serialize + Deserialize<'b>;
     /// The type of payload of the messages that the initiator of the communication sends forth
-    type ForthPayload;
+    type ForthPayload: Serialize + Deserialize<'f>;
 }
 
-impl<B: RpcCommBus> Bus for B {
+impl<'i, 'b, 'f, B: RpcCommBus<'i, 'b, 'f>> Bus<'i> for B {
     type Chan = RpcChannel;
     type PublishPayload = B::InitialPayload;
 }
 
-impl<B: RpcCommBus> DirectBus for B {
+impl<'i, 'b, 'f, B: RpcCommBus<'i, 'b, 'f>> DirectBus<'i> for B {
     type Args = B::Args;
 
     fn queue(args: Self::Args) -> String {
@@ -57,12 +57,12 @@ pub struct BackReply<B> {
     _marker: PhantomData<B>,
 }
 
-impl<B: RpcCommBus> Bus for BackReply<B> {
+impl<'i, 'b, 'f, B: RpcCommBus<'i, 'b, 'f>> Bus<'b> for BackReply<B> {
     type Chan = RpcChannel;
     type PublishPayload = B::BackPayload;
 }
 
-impl<B: RpcCommBus> DirectBus for BackReply<B> {
+impl<'i, 'b, 'f, B: RpcCommBus<'i, 'b, 'f>> DirectBus<'b> for BackReply<B> {
     type Args = B::Args;
 
     fn queue(args: Self::Args) -> String {
@@ -70,7 +70,7 @@ impl<B: RpcCommBus> DirectBus for BackReply<B> {
     }
 }
 
-impl<B: RpcCommBus> RpcBus for BackReply<B> {
+impl<'i, 'b, 'f, B: RpcCommBus<'i, 'b, 'f>> RpcBus<'b, 'f> for BackReply<B> {
     type ReplyPayload = B::ForthPayload;
 }
 
@@ -80,12 +80,12 @@ pub struct ForthReply<B> {
     _marker: PhantomData<B>,
 }
 
-impl<B: RpcCommBus> Bus for ForthReply<B> {
+impl<'i, 'b, 'f, B: RpcCommBus<'i, 'b, 'f>> Bus<'f> for ForthReply<B> {
     type Chan = RpcChannel;
     type PublishPayload = B::ForthPayload;
 }
 
-impl<B: RpcCommBus> DirectBus for ForthReply<B> {
+impl<'i, 'b, 'f, B: RpcCommBus<'i, 'b, 'f>> DirectBus<'f> for ForthReply<B> {
     type Args = B::Args;
 
     fn queue(args: Self::Args) -> String {
@@ -97,7 +97,7 @@ impl RpcChannel {
     /// Create a new [Consumer] for the [RpcCommBus] that declares
     /// a direct queue with the name produced by [RpcCommBus::queue]
     /// given the passed [RpcCommBus::Args]
-    pub async fn comm_consumer<B: RpcCommBus>(
+    pub async fn comm_consumer<'i, 'b, 'f, B: RpcCommBus<'i, 'b, 'f>>(
         &self,
         args: B::Args,
         consumer_tag: &str,
@@ -123,7 +123,7 @@ impl RpcChannel {
     }
 
     /// Setup a new [Publisher] associated wit the [RpcCommBus].
-    pub fn comm_publisher<B: RpcCommBus>(&self) -> Publisher<B> {
+    pub fn comm_publisher<'i, 'b, 'f, B: RpcCommBus<'i, 'b, 'f>>(&self) -> Publisher<B> {
         debug!("Created comm publisher for RPC bus {}", type_name::<B>());
         Publisher {
             chan: self.clone(),
@@ -131,12 +131,9 @@ impl RpcChannel {
     }
 }
 
-impl<'r, 'p, B> Publisher<B>
+impl<'i, 'b, 'f, B> Publisher<'i, B>
 where
-    B: RpcCommBus,
-    B::InitialPayload: Deserialize<'r> + Serialize,
-    B::BackPayload: Deserialize<'p> + Serialize,
-    B::ForthPayload: Deserialize<'r> + Serialize,
+    B: RpcCommBus<'i, 'b, 'f>,
 {
     /// Publish an initial message onto the [RpcCommBus], and receive the replies with
     /// with [RpcCommBus::BackPayload] payloads onto the returned [Stream].
@@ -168,10 +165,7 @@ where
 
 impl<'i, 'b, 'f, B> Delivery<B>
 where
-    B: RpcCommBus,
-    B::InitialPayload: Deserialize<'b> + Serialize,
-    B::BackPayload: Deserialize<'b> + Serialize,
-    B::ForthPayload: Deserialize<'f> + Serialize,
+    B: RpcCommBus<'i, 'b, 'f>,
 {
     /// Reply to a message that was sent by the receiver of the initial message.
     pub async fn reply_forth(
@@ -322,7 +316,7 @@ macro_rules! rpc_comm_bus {
 #[macro_export]
 macro_rules! rpc_comm_bus_impl {
     ($bus:ty, $back_payload:ty, $initial_payload:ty, $forth_payload:ty, $args:ty, $queue:expr) => {
-        impl $crate::RpcCommBus for $bus {
+        impl<'i, 'b, 'f> $crate::RpcCommBus<'i, 'b, 'f> for $bus {
             type InitialPayload = $initial_payload;
             type BackPayload = $back_payload;
             type ForthPayload = $forth_payload;

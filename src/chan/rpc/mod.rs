@@ -21,9 +21,9 @@ pub use comm::*;
 
 /// A bus that allows publishing messages on a direct queue,
 /// as well as replying to them.
-pub trait RpcBus: DirectBus {
+pub trait RpcBus<'p, 'r>: DirectBus<'p> {
     /// The type of payload of the replies of messages published on this bus.
-    type ReplyPayload;
+    type ReplyPayload: Serialize + Deserialize<'r>;
 }
 
 #[derive(Clone)]
@@ -41,12 +41,12 @@ pub struct Reply<B> {
     _marker: PhantomData<B>,
 }
 
-impl<B: RpcBus> Bus for Reply<B> {
+impl<'p, 'r, B: RpcBus<'p, 'r>> Bus<'r> for Reply<B> {
     type Chan = RpcChannel;
     type PublishPayload = B::ReplyPayload;
 }
 
-impl<B: RpcBus> DirectBus for Reply<B> {
+impl<'p, 'r, B: RpcBus<'p, 'r>> DirectBus<'r> for Reply<B> {
     type Args = B::Args;
 
     fn queue(args: Self::Args) -> String {
@@ -54,7 +54,7 @@ impl<B: RpcBus> DirectBus for Reply<B> {
     }
 }
 
-impl<B: RpcBus> RpcBus for Reply<B> {
+impl<'p, 'r, B: RpcBus<'p, 'r>> RpcBus<'r, 'p> for Reply<B> {
     type ReplyPayload = B::PublishPayload;
 }
 
@@ -152,7 +152,7 @@ impl RpcChannel {
     /// Create a new [Consumer] for the [RpcBus] that declares
     /// a direct queue with the name produced by [DirectBus::queue]
     /// given the passed [DirectBus::Args]
-    pub async fn consumer<B: RpcBus>(
+    pub async fn consumer<'p, 'r, B: RpcBus<'p, 'r>>(
         &self,
         args: B::Args,
         consumer_tag: &str,
@@ -178,7 +178,7 @@ impl RpcChannel {
     }
 
     /// Create a new [Publisher] that allows for publishing on the [RpcBus]
-    pub fn publisher<B: RpcBus<Chan = Self>>(&self) -> Publisher<B> {
+    pub fn publisher<'p, 'r, B: RpcBus<'p, 'r, Chan = Self>>(&self) -> Publisher<B> {
         debug!("Created publisher for RPC bus {}", type_name::<B>());
         Publisher {
             chan: self.clone(),
@@ -214,11 +214,9 @@ impl Channel for RpcChannel {
     }
 }
 
-impl<'r, 'p, B> Publisher<B>
+impl<'p, 'r, B> Publisher<'p, B>
 where
-    B: RpcBus<Chan = RpcChannel>,
-    B::PublishPayload: Deserialize<'p> + Serialize,
-    B::ReplyPayload: Deserialize<'r> + Serialize,
+    B: RpcBus<'p, 'r, Chan = RpcChannel>,
 {
     /// Publish a message and await many replies. The replies
     /// can be obtained by calling [StreamExt::next] on the returned [Stream].
@@ -261,9 +259,7 @@ where
 
 impl<'p, 'r, B> Delivery<B>
 where
-    B: RpcBus,
-    B::PublishPayload: Deserialize<'p> + Serialize,
-    B::ReplyPayload: Deserialize<'r> + Serialize,
+    B: RpcBus<'p, 'r>,
 {
     /// Reply to a [Delivery].
     pub async fn reply(&self, reply_payload: &B::ReplyPayload, chan: &impl Channel) -> Result<()> {
@@ -482,7 +478,7 @@ macro_rules! rpc_bus {
 #[macro_export]
 macro_rules! rpc_bus_impl {
     ($bus:ident, $reply_payload:ty) => {
-        impl $crate::RpcBus for $bus {
+        impl<'p, 'r> $crate::RpcBus<'p, 'r> for $bus {
             type ReplyPayload = $reply_payload;
         }
     };

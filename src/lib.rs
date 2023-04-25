@@ -40,8 +40,7 @@ pub struct Delivery<B> {
 
 impl<'p, 'r, B> Delivery<B>
 where
-    B: Bus,
-    B::PublishPayload: Deserialize<'p> + Serialize,
+    B: Bus<'p>,
 {
     /// Deserialize and return the payload from the [Delivery]
     pub fn get_payload(&'p self) -> Result<B::PublishPayload> {

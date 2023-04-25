@@ -21,11 +21,11 @@ pub use rpc::*;
 pub use topic::*;
 
 /// A Bus. Base trait for several other buses
-pub trait Bus: Unpin {
+pub trait Bus<'p>: Unpin {
     /// The [Channel] this bus is associated with.
     type Chan: Channel;
     /// The type of payload of the messages that are published on or consumed from it.
-    type PublishPayload;
+    type PublishPayload: Serialize + Deserialize<'p>;
 }
 
 #[async_trait]
@@ -52,8 +52,7 @@ pub struct Consumer<B> {
 
 impl<'p, B> Stream for Consumer<B>
 where
-    B: Bus,
-    B::PublishPayload: Deserialize<'p> + Serialize,
+    B: Bus<'p>,
 {
     type Item = Result<Delivery<B>>;
 
@@ -74,15 +73,15 @@ where
 /// of the [Bus::PublishPayload] type. [Publisher]s take care
 /// of serializing the payloads before publishing.
 #[derive(Clone)]
-pub struct Publisher<B: Bus> {
+pub struct Publisher<'p, B: Bus<'p>> {
     chan: B::Chan,
 }
 
-impl<B> Publisher<B>
+impl<'p, B> Publisher<'p, B>
 where
-    B: Bus,
+    B: Bus<'p>,
 {
-    async fn publish_with_properties<'p, P>(
+    async fn publish_with_properties<P>(
         &self,
         routing_key: &str,
         payload: &P,
@@ -90,8 +89,6 @@ where
         correlation_uuid: Uuid,
         reply_uuid: Option<Uuid>,
     ) -> Result<()>
-    where
-        P: Deserialize<'p> + Serialize,
     {
         let bytes = serde_json::to_vec(payload)?;
         self.chan
@@ -160,7 +157,7 @@ macro_rules! bus {
 #[macro_export]
 macro_rules! bus_impl {
     ($bus:ident, $chan:ty, $publish_payload:ty) => {
-        impl $crate::Bus for $bus {
+        impl<'p> $crate::Bus<'p> for $bus {
             type Chan = $chan;
             type PublishPayload = $publish_payload;
         }

@@ -18,7 +18,7 @@ pub trait TopicExchange: Clone + Send + Sync {
 
 /// A bus that is associated with a [TopicExchange], and defines a
 /// pattern of topics onto which messages can be publised and consumed
-pub trait TopicBus: Bus {
+pub trait TopicBus<'p>: Bus<'p> {
     /// The Topic Exchange this bus is associated with
     type Exchange: TopicExchange;
     /// The pattern of the topic that this bus publishes to or consumes from
@@ -54,7 +54,7 @@ impl<E: TopicExchange> TopicChannel<E> {
 
     /// Create a new [Consumer] for the topic bus that consumes
     /// messages with routing keys matching the passed [ConsumerRoutingKey].
-    pub async fn consumer<B: TopicBus>(
+    pub async fn consumer<'p, B: TopicBus<'p>>(
         &self,
         routing_key: ConsumerRoutingKey<B>,
         consumer_tag: &str,
@@ -101,7 +101,7 @@ impl<E: TopicExchange> TopicChannel<E> {
     }
 
     /// Create a new [Publisher] that publishes onto the [TopicBus].
-    pub fn publisher<B: TopicBus<Chan = Self>>(&self) -> Publisher<B> {
+    pub fn publisher<'p, B: TopicBus<'p, Chan = Self>>(&self) -> Publisher<'p, B> {
         debug!("Created publisher for topic bus {}", type_name::<B>());
         Publisher {
             chan: self.clone(),
@@ -137,10 +137,9 @@ impl<E: TopicExchange> Channel for TopicChannel<E> {
     }
 }
 
-impl<'p, B> Publisher< B>
+impl<'p, B> Publisher<'p, B>
 where
-    B: TopicBus,
-    B::PublishPayload: Deserialize<'p> + Serialize,
+    B: TopicBus<'p>,
 {
     /// Publish a message onto a topic on the exchange associated with the [TopicBus] for this [Publisher] with the passed [PublisherRoutingKey].
     pub async fn publish_topic(
@@ -169,7 +168,7 @@ pub struct ConsumerRoutingKey<B> {
     _marker: PhantomData<B>,
 }
 
-impl<B: TopicBus> TryFrom<String> for ConsumerRoutingKey<B> {
+impl<'p, B: TopicBus<'p>> TryFrom<String> for ConsumerRoutingKey<B> {
     type Error = RoutingKeyError;
 
     fn try_from(key: String) -> std::result::Result<Self, Self::Error> {
@@ -199,7 +198,7 @@ impl<B: TopicBus> TryFrom<String> for ConsumerRoutingKey<B> {
     }
 }
 
-impl<B: TopicBus> TryFrom<&str> for ConsumerRoutingKey<B> {
+impl<'p, B: TopicBus<'p>> TryFrom<&str> for ConsumerRoutingKey<B> {
     type Error = <Self as TryFrom<String>>::Error;
 
     fn try_from(key: &str) -> std::result::Result<Self, Self::Error> {
@@ -221,7 +220,7 @@ pub struct PublisherRoutingKey<B> {
     _marker: PhantomData<B>,
 }
 
-impl<B: TopicBus> TryFrom<String> for PublisherRoutingKey<B> {
+impl<'p, B: TopicBus<'p>> TryFrom<String> for PublisherRoutingKey<B> {
     type Error = RoutingKeyError;
 
     fn try_from(key: String) -> std::result::Result<Self, Self::Error> {
@@ -252,7 +251,7 @@ impl<B: TopicBus> TryFrom<String> for PublisherRoutingKey<B> {
     }
 }
 
-impl<B: TopicBus> TryFrom<&str> for PublisherRoutingKey<B> {
+impl<'p, B: TopicBus<'p>> TryFrom<&str> for PublisherRoutingKey<B> {
     type Error = <Self as TryFrom<String>>::Error;
 
     fn try_from(key: &str) -> std::result::Result<Self, Self::Error> {
@@ -453,7 +452,7 @@ macro_rules! topic_bus {
 #[macro_export]
 macro_rules! topic_bus_impl {
     ($bus:ident, $exchange:ty, $topic:literal) => {
-        impl $crate::TopicBus for $bus {
+        impl<'p> $crate::TopicBus<'p> for $bus {
             type Exchange = $exchange;
             const TOPIC_PATTERN: &'static str = $topic;
         }
