@@ -121,6 +121,11 @@ mod tests {
     use async_trait::async_trait;
     use lapin::BasicProperties;
     use serde::{Deserialize, Serialize};
+    use tracing::{
+        subscriber::{self, DefaultGuard},
+        Level,
+    };
+    use tracing_subscriber::fmt;
     use uuid::Uuid;
 
     use crate::{bus, bus_impl, Channel, Never};
@@ -148,6 +153,15 @@ mod tests {
 
     bus!("A frame bus", FrameBus);
     bus_impl!(FrameBus, Never, FramePayload);
+
+    pub fn setup_test_logging() -> DefaultGuard {
+        subscriber::set_default(
+            fmt()
+                .with_test_writer()
+                .with_max_level(Level::DEBUG)
+                .finish(),
+        )
+    }
 }
 
 #[doc(hidden)]

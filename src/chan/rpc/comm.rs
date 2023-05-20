@@ -264,12 +264,80 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::{chan::tests::FramePayload, rpc_comm_bus, FrameSendError};
+    use std::time::Duration;
+
+    use futures::StreamExt;
+    use tokio::time::timeout;
+    use tracing::info;
+    use uuid::Uuid;
+
+    use crate::{
+        chan::tests::FramePayload, rpc_comm_bus, setup_test_logging, Connection, Consumer,
+        FrameSendError, Publisher, RpcChannel, RABBIT_MQ_URL,
+    };
 
     rpc_comm_bus!(FrameCommBus, FramePayload, FramePayload, Result<(), FrameSendError>, u32, |args| format!(
         "frame_comm_{}",
         args
     ));
+
+    #[tokio::test]
+    async fn publish_recv_comm() -> crate::Result<()> {
+        let _log = setup_test_logging();
+        let connection = Connection::connect(RABBIT_MQ_URL).await?;
+        let uuid = Uuid::new_v4();
+
+        let channel = RpcChannel::new(&connection).await?;
+        let publisher: Publisher<FrameCommBus> = channel.comm_publisher();
+
+        let handle = tokio::task::spawn({
+            let channel = RpcChannel::new(&connection).await?;
+            let mut consumer: Consumer<FrameCommBus> = channel
+                .comm_consumer(123, &Uuid::new_v4().to_string())
+                .await?;
+
+            async move {
+                let initial = consumer.next().await.unwrap().unwrap();
+                info!("Got initial");
+                for i in 0..3 {
+                    info!("Sending back reply {i}");
+                    let response = initial
+                        .reply_recv(
+                            &FramePayload {
+                                message: i.to_string(),
+                            },
+                            &channel,
+                        )
+                        .await
+                        .unwrap()
+                        .await;
+                    info!("Got forth reply {i}");
+                    assert_eq!(response.get_payload().unwrap(), Ok(()))
+                }
+            }
+        });
+
+        let mut rx = publisher
+            .publish_recv_comm(
+                123,
+                &FramePayload {
+                    message: uuid.to_string(),
+                },
+            )
+            .await?;
+        info!("Sent initial");
+
+        for i in 0..3 {
+            let back_reply = timeout(Duration::from_secs(5), rx.next())
+                .await
+                .unwrap()
+                .unwrap();
+            info!("Got back reply {i}");
+            back_reply.reply(&Ok(()), &channel).await?;
+        }
+        handle.await.unwrap();
+        Ok(())
+    }
 }
 
 #[macro_export]

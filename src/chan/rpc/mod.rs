@@ -363,7 +363,7 @@ mod tests {
         rpc_bus, Connection, Consumer, Publisher, RpcChannel,
     };
 
-    #[derive(Debug, Serialize, Deserialize)]
+    #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
     pub enum FrameSendError {
         ClientDisconnected,
         Other,
@@ -376,10 +376,10 @@ mod tests {
 
     #[tokio::test]
     async fn publish_recv_many() -> crate::Result<()> {
-        let connection = Connection::connect(RABBIT_MQ_URL).await.unwrap();
+        let connection = Connection::connect(RABBIT_MQ_URL).await?;
         let uuid = Uuid::new_v4();
         tokio::task::spawn({
-            let channel = RpcChannel::new(&connection).await.unwrap();
+            let channel = RpcChannel::new(&connection).await?;
             let mut consumer: Consumer<FrameBus> =
                 channel.consumer(3, &Uuid::new_v4().to_string()).await?;
             async move {
@@ -395,7 +395,7 @@ mod tests {
             }
         });
 
-        let channel = RpcChannel::new(&connection).await.unwrap();
+        let channel = RpcChannel::new(&connection).await?;
         let publisher: Publisher<FrameBus> = channel.publisher();
 
         let mut rx = publisher
@@ -405,8 +405,7 @@ mod tests {
                     message: uuid.to_string(),
                 },
             )
-            .await
-            .unwrap();
+            .await?;
 
         for _ in 0..3 {
             timeout(Duration::from_secs(1), rx.next()).await.unwrap();
