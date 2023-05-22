@@ -136,12 +136,20 @@ impl RpcChannel {
         })
     }
 
-    fn register_pending_reply(
+    fn register_pending_reply<B: DirectBus>(
         &self,
         correlation_uuid: Uuid,
-        tx: mpsc::UnboundedSender<lapin::message::Delivery>,
-    ) {
+    ) -> impl Stream<Item = Delivery<B>> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        debug!("Registering pending reply for correlation UUID {correlation_uuid}");
+        let rx = ReplyReceiver {
+            correlation_uuid,
+            inner: rx,
+            chan: Some(self.clone()),
+            _marker: PhantomData,
+        };
         self.pending_replies.insert(correlation_uuid, tx);
+        rx
     }
 
     fn remove_pending_reply(&self, correlation_uuid: &Uuid) {
@@ -224,16 +232,7 @@ where
         payload: &B::PublishPayload,
     ) -> Result<impl Stream<Item = Delivery<Reply<B>>>> {
         let correlation_uuid = Uuid::new_v4();
-        let (tx, rx) = mpsc::unbounded_channel();
-
-        let rx = ReplyReceiver {
-            correlation_uuid,
-            inner: rx,
-            chan: Some(self.chan.clone()),
-            _marker: PhantomData,
-        };
-
-        self.chan.register_pending_reply(correlation_uuid, tx);
+        let rx = self.chan.register_pending_reply(correlation_uuid);
 
         let properties = BasicProperties::default().with_reply_to("amq.rabbitmq.reply-to".into());
 

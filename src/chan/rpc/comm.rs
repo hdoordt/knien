@@ -3,7 +3,6 @@ use std::{any::type_name, marker::PhantomData};
 use futures::{Future, Stream, StreamExt};
 use lapin::BasicProperties;
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
 use tracing::debug;
 use uuid::Uuid;
 
@@ -11,8 +10,6 @@ use crate::{
     error::Error, Bus, Channel, Consumer, Delivery, DirectBus, Publisher, ReplyError, Result,
     RpcBus, RpcChannel,
 };
-
-use super::ReplyReceiver;
 
 /// An RPC-based communication bus that defines an `InitialPayload`,
 /// a `BackPayload` and `ForthPayload`, and supports flows where a single
@@ -145,16 +142,8 @@ where
         payload: &B::InitialPayload,
     ) -> Result<impl Stream<Item = Delivery<BackReply<B>>>> {
         let correlation_uuid = Uuid::new_v4();
-        let (tx, rx) = mpsc::unbounded_channel();
 
-        let rx = ReplyReceiver {
-            correlation_uuid,
-            inner: rx,
-            chan: Some(self.chan.clone()),
-            _marker: PhantomData,
-        };
-
-        self.chan.register_pending_reply(correlation_uuid, tx);
+        let rx = self.chan.register_pending_reply(correlation_uuid);
 
         let properties = BasicProperties::default().with_reply_to("amq.rabbitmq.reply-to".into());
         debug!("Publishing message with correlation UUID {correlation_uuid}, setting up back-and-forth communication");
@@ -190,15 +179,7 @@ where
         let correlation_uuid = Uuid::new_v4();
         let bytes = serde_json::to_vec(back_payload)?;
 
-        let (tx, rx) = mpsc::unbounded_channel();
-
-        let rx: ReplyReceiver<ForthReply<B>> = ReplyReceiver {
-            correlation_uuid,
-            inner: rx,
-            chan: Some(rpc_chan.clone()),
-            _marker: PhantomData,
-        };
-        rpc_chan.register_pending_reply(correlation_uuid, tx);
+        let rx = rpc_chan.register_pending_reply(correlation_uuid);
 
         let properties = BasicProperties::default().with_reply_to("amq.rabbitmq.reply-to".into());
 
@@ -299,7 +280,6 @@ mod tests {
             )
             .await?;
         info!("Sent initial");
-
         for i in 0..3 {
             let back_reply = timeout(Duration::from_secs(5), rx.next())
                 .await
