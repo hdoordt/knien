@@ -3,7 +3,6 @@ use std::{any::type_name, marker::PhantomData};
 use futures::{Future, Stream, StreamExt};
 use lapin::BasicProperties;
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
 use tracing::debug;
 use uuid::Uuid;
 
@@ -11,8 +10,6 @@ use crate::{
     error::Error, Bus, Channel, Consumer, Delivery, DirectBus, Publisher, ReplyError, Result,
     RpcBus, RpcChannel,
 };
-
-use super::ReplyReceiver;
 
 /// An RPC-based communication bus that defines an `InitialPayload`,
 /// a `BackPayload` and `ForthPayload`, and supports flows where a single
@@ -129,12 +126,12 @@ impl RpcChannel {
     }
 }
 
-impl<'r, 'p, B> Publisher<B>
+impl<'i, 'b, 'f, B> Publisher<B>
 where
     B: RpcCommBus,
-    B::InitialPayload: Deserialize<'r> + Serialize,
-    B::BackPayload: Deserialize<'p> + Serialize,
-    B::ForthPayload: Deserialize<'r> + Serialize,
+    B::InitialPayload: Deserialize<'i> + Serialize,
+    B::BackPayload: Deserialize<'b> + Serialize,
+    B::ForthPayload: Deserialize<'f> + Serialize,
 {
     /// Publish an initial message onto the [RpcCommBus], and receive the replies with
     /// with [RpcCommBus::BackPayload] payloads onto the returned [Stream].
@@ -145,16 +142,8 @@ where
         payload: &B::InitialPayload,
     ) -> Result<impl Stream<Item = Delivery<BackReply<B>>>> {
         let correlation_uuid = Uuid::new_v4();
-        let (tx, rx) = mpsc::unbounded_channel();
 
-        let rx = ReplyReceiver {
-            correlation_uuid,
-            inner: rx,
-            chan: Some(self.chan.clone()),
-            _marker: PhantomData,
-        };
-
-        self.chan.register_pending_reply(correlation_uuid, tx);
+        let rx = self.chan.register_pending_reply(correlation_uuid);
 
         let properties = BasicProperties::default().with_reply_to("amq.rabbitmq.reply-to".into());
         debug!("Publishing message with correlation UUID {correlation_uuid}, setting up back-and-forth communication");
@@ -167,39 +156,10 @@ where
 impl<'i, 'b, 'f, B> Delivery<B>
 where
     B: RpcCommBus,
-    B::InitialPayload: Deserialize<'b> + Serialize,
+    B::InitialPayload: Deserialize<'i> + Serialize,
     B::BackPayload: Deserialize<'b> + Serialize,
     B::ForthPayload: Deserialize<'f> + Serialize,
 {
-    /// Reply to a message that was sent by the receiver of the initial message.
-    pub async fn reply_forth(
-        &self,
-        forth_payload: &B::ForthPayload,
-        chan: &impl Channel,
-    ) -> Result<()> {
-        let Some(correlation_uuid) = self.get_uuid() else {
-            return Err(Error::Reply(ReplyError::NoCorrelationUuid));
-        };
-        let Some(reply_to) = self.inner.properties.reply_to().as_ref().map(|r | r.as_str()) else {
-            return Err(Error::Reply(ReplyError::NoReplyToConfigured))
-        };
-
-        let reply_uuid = correlation_uuid?;
-
-        let bytes = serde_json::to_vec(forth_payload)?;
-
-        debug!("Replying forth to message with correlation UUID {reply_uuid}");
-        let correlation_uuid = Uuid::new_v4();
-        chan.publish_with_properties(
-            &bytes,
-            reply_to,
-            Default::default(),
-            correlation_uuid,
-            Some(reply_uuid),
-        )
-        .await
-    }
-
     /// Reply to a message that was sent by the receiver of the initial message and await
     /// multiple replies from the receiver.
     /// The messages can be obtained by calling [futures::StreamExt::next] on the returned [Stream].
@@ -215,24 +175,16 @@ where
             return Err(Error::Reply(ReplyError::NoReplyToConfigured))
         };
 
-        let bytes = serde_json::to_vec(back_payload)?;
         let reply_uuid = correlation_uuid?;
+        let correlation_uuid = Uuid::new_v4();
+        let bytes = serde_json::to_vec(back_payload)?;
 
-        let (tx, rx) = mpsc::unbounded_channel();
-
-        let rx = ReplyReceiver {
-            correlation_uuid: reply_uuid,
-            inner: rx,
-            chan: Some(rpc_chan.clone()),
-            _marker: PhantomData,
-        };
-
-        rpc_chan.register_pending_reply(reply_uuid, tx);
+        let rx = rpc_chan.register_pending_reply(correlation_uuid);
 
         let properties = BasicProperties::default().with_reply_to("amq.rabbitmq.reply-to".into());
 
         debug!("Replying back to message with correlation UUID {reply_uuid}");
-        let correlation_uuid = Uuid::new_v4();
+
         rpc_chan
             .publish_with_properties(
                 &bytes,
@@ -264,12 +216,81 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::{chan::tests::FramePayload, rpc_comm_bus, FrameSendError};
+    use std::time::Duration;
+
+    use futures::StreamExt;
+    use tokio::time::timeout;
+    use tracing::info;
+    use uuid::Uuid;
+
+    use crate::{
+        chan::tests::FramePayload, rpc_comm_bus, setup_test_logging, Connection, Consumer,
+        FrameSendError, Publisher, RpcChannel, RABBIT_MQ_URL,
+    };
 
     rpc_comm_bus!(FrameCommBus, FramePayload, FramePayload, Result<(), FrameSendError>, u32, |args| format!(
         "frame_comm_{}",
         args
     ));
+
+    #[tokio::test]
+    async fn publish_recv_comm() -> crate::Result<()> {
+        let _log = setup_test_logging();
+        let connection = Connection::connect(RABBIT_MQ_URL).await?;
+        let uuid = Uuid::new_v4();
+
+        let handle = tokio::task::spawn({
+            let channel = RpcChannel::new(&connection).await?;
+            let mut consumer: Consumer<FrameCommBus> = channel
+                .comm_consumer(123, &Uuid::new_v4().to_string())
+                .await?;
+
+            async move {
+                let initial = consumer.next().await.unwrap().unwrap();
+                initial.ack(true).await.unwrap();
+                info!("Got initial");
+                for i in 0..3 {
+                    info!("Sending back reply {i}");
+                    let response_fut = initial
+                        .reply_recv(
+                            &FramePayload {
+                                message: i.to_string(),
+                            },
+                            &channel,
+                        )
+                        .await
+                        .unwrap();
+
+                    let response = timeout(Duration::from_secs(5), response_fut).await.unwrap();
+                    info!("Got forth reply {i}");
+                    assert_eq!(response.get_payload().unwrap(), Ok(()))
+                }
+            }
+        });
+
+        let channel = RpcChannel::new(&connection).await?;
+        let publisher: Publisher<FrameCommBus> = channel.comm_publisher();
+
+        let mut rx = publisher
+            .publish_recv_comm(
+                123,
+                &FramePayload {
+                    message: uuid.to_string(),
+                },
+            )
+            .await?;
+        info!("Sent initial");
+        for i in 0..3 {
+            let back_reply = timeout(Duration::from_secs(5), rx.next())
+                .await
+                .unwrap()
+                .unwrap();
+            info!("Got back reply {i}, sending forth reply {i}");
+            back_reply.reply(&Ok(()), &channel).await?;
+        }
+        handle.await.unwrap();
+        Ok(())
+    }
 }
 
 #[macro_export]

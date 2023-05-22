@@ -240,7 +240,6 @@ impl<B: TopicBus> TryFrom<String> for PublisherRoutingKey<B> {
 
         let regex = Regex::new(&format!("^{pattern}$")).unwrap();
         if !regex.is_match(&key) {
-            println!("Err");
             return Err(RoutingKeyError::InvalidKey(key, B::TOPIC_PATTERN));
         }
         Ok(Self {

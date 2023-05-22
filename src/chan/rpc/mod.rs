@@ -107,7 +107,6 @@ impl RpcChannel {
                                             return;
                                         }
                                     };
-
                                     let forwarding_success =
                                         if let Some(tx) = pending_replies.get(&reply_id) {
                                             tx.send(msg).is_ok()
@@ -122,7 +121,7 @@ impl RpcChannel {
                             // `forward_reply` should run to completion
                             drop(forward_reply);
                         }
-                        Err(e) => eprintln!("Error receiving reply message: {e:?}"),
+                        Err(e) => error!("Error receiving reply message: {e:?}"),
                     }
                 }
                 panic!("Task handle_replies ended");
@@ -137,12 +136,20 @@ impl RpcChannel {
         })
     }
 
-    fn register_pending_reply(
+    fn register_pending_reply<B: DirectBus>(
         &self,
         correlation_uuid: Uuid,
-        tx: mpsc::UnboundedSender<lapin::message::Delivery>,
-    ) {
+    ) -> impl Stream<Item = Delivery<B>> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        debug!("Registering pending reply for correlation UUID {correlation_uuid}");
+        let rx = ReplyReceiver {
+            correlation_uuid,
+            inner: rx,
+            chan: Some(self.clone()),
+            _marker: PhantomData,
+        };
         self.pending_replies.insert(correlation_uuid, tx);
+        rx
     }
 
     fn remove_pending_reply(&self, correlation_uuid: &Uuid) {
@@ -195,9 +202,8 @@ impl Channel for RpcChannel {
         reply_uuid: Option<Uuid>,
     ) -> Result<()> {
         let correlation_id = fmt_correlation_id(correlation_uuid, reply_uuid);
+        debug!("Publishing message with correlation ID {correlation_id} an RPC channel with routing key {routing_key}");
         let properties = properties.with_correlation_id(correlation_id.into());
-
-        debug!("Publishing message with correlation UUID {correlation_uuid} an RPC channel with routing key {routing_key}");
         self.inner
             .basic_publish(
                 "",
@@ -226,16 +232,7 @@ where
         payload: &B::PublishPayload,
     ) -> Result<impl Stream<Item = Delivery<Reply<B>>>> {
         let correlation_uuid = Uuid::new_v4();
-        let (tx, rx) = mpsc::unbounded_channel();
-
-        let rx = ReplyReceiver {
-            correlation_uuid,
-            inner: rx,
-            chan: Some(self.chan.clone()),
-            _marker: PhantomData,
-        };
-
-        self.chan.register_pending_reply(correlation_uuid, tx);
+        let rx = self.chan.register_pending_reply(correlation_uuid);
 
         let properties = BasicProperties::default().with_reply_to("amq.rabbitmq.reply-to".into());
 
@@ -360,10 +357,10 @@ mod tests {
 
     use crate::{
         chan::tests::{FramePayload, RABBIT_MQ_URL},
-        rpc_bus, Connection, Consumer, Publisher, RpcChannel,
+        rpc_bus, setup_test_logging, Connection, Consumer, Publisher, RpcChannel,
     };
 
-    #[derive(Debug, Serialize, Deserialize)]
+    #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
     pub enum FrameSendError {
         ClientDisconnected,
         Other,
@@ -376,10 +373,12 @@ mod tests {
 
     #[tokio::test]
     async fn publish_recv_many() -> crate::Result<()> {
-        let connection = Connection::connect(RABBIT_MQ_URL).await.unwrap();
+        let _log = setup_test_logging();
+
+        let connection: Connection = Connection::connect(RABBIT_MQ_URL).await?;
         let uuid = Uuid::new_v4();
         tokio::task::spawn({
-            let channel = RpcChannel::new(&connection).await.unwrap();
+            let channel = RpcChannel::new(&connection).await?;
             let mut consumer: Consumer<FrameBus> =
                 channel.consumer(3, &Uuid::new_v4().to_string()).await?;
             async move {
@@ -395,7 +394,7 @@ mod tests {
             }
         });
 
-        let channel = RpcChannel::new(&connection).await.unwrap();
+        let channel = RpcChannel::new(&connection).await?;
         let publisher: Publisher<FrameBus> = channel.publisher();
 
         let mut rx = publisher
@@ -405,8 +404,7 @@ mod tests {
                     message: uuid.to_string(),
                 },
             )
-            .await
-            .unwrap();
+            .await?;
 
         for _ in 0..3 {
             timeout(Duration::from_secs(1), rx.next()).await.unwrap();
@@ -417,6 +415,8 @@ mod tests {
 
     #[tokio::test]
     async fn publish_recv_one() -> Result<(), crate::Error> {
+        let _log = setup_test_logging();
+
         let connection = Connection::connect(RABBIT_MQ_URL).await.unwrap();
         let uuid = Uuid::new_v4();
         tokio::task::spawn({
