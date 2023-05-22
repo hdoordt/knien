@@ -171,35 +171,6 @@ where
     B::BackPayload: Deserialize<'b> + Serialize,
     B::ForthPayload: Deserialize<'f> + Serialize,
 {
-    /// Reply to a message that was sent by the receiver of the initial message.
-    pub async fn reply_forth(
-        &self,
-        forth_payload: &B::ForthPayload,
-        chan: &impl Channel,
-    ) -> Result<()> {
-        let Some(correlation_uuid) = self.get_uuid() else {
-            return Err(Error::Reply(ReplyError::NoCorrelationUuid));
-        };
-        let Some(reply_to) = self.inner.properties.reply_to().as_ref().map(|r | r.as_str()) else {
-            return Err(Error::Reply(ReplyError::NoReplyToConfigured))
-        };
-
-        let reply_uuid = correlation_uuid?;
-
-        let bytes = serde_json::to_vec(forth_payload)?;
-
-        debug!("Replying forth to message with correlation UUID {reply_uuid}");
-        let correlation_uuid = Uuid::new_v4();
-        chan.publish_with_properties(
-            &bytes,
-            reply_to,
-            Default::default(),
-            correlation_uuid,
-            Some(reply_uuid),
-        )
-        .await
-    }
-
     /// Reply to a message that was sent by the receiver of the initial message and await
     /// multiple replies from the receiver.
     /// The messages can be obtained by calling [futures::StreamExt::next] on the returned [Stream].
@@ -215,24 +186,24 @@ where
             return Err(Error::Reply(ReplyError::NoReplyToConfigured))
         };
 
-        let bytes = serde_json::to_vec(back_payload)?;
         let reply_uuid = correlation_uuid?;
+        let correlation_uuid = Uuid::new_v4();
+        let bytes = serde_json::to_vec(back_payload)?;
 
         let (tx, rx) = mpsc::unbounded_channel();
 
-        let rx = ReplyReceiver {
-            correlation_uuid: reply_uuid,
+        let rx: ReplyReceiver<ForthReply<B>> = ReplyReceiver {
+            correlation_uuid,
             inner: rx,
             chan: Some(rpc_chan.clone()),
             _marker: PhantomData,
         };
-
-        rpc_chan.register_pending_reply(reply_uuid, tx);
+        rpc_chan.register_pending_reply(correlation_uuid, tx);
 
         let properties = BasicProperties::default().with_reply_to("amq.rabbitmq.reply-to".into());
 
         debug!("Replying back to message with correlation UUID {reply_uuid}");
-        let correlation_uuid = Uuid::new_v4();
+
         rpc_chan
             .publish_with_properties(
                 &bytes,
@@ -287,9 +258,6 @@ mod tests {
         let connection = Connection::connect(RABBIT_MQ_URL).await?;
         let uuid = Uuid::new_v4();
 
-        let channel = RpcChannel::new(&connection).await?;
-        let publisher: Publisher<FrameCommBus> = channel.comm_publisher();
-
         let handle = tokio::task::spawn({
             let channel = RpcChannel::new(&connection).await?;
             let mut consumer: Consumer<FrameCommBus> = channel
@@ -298,10 +266,11 @@ mod tests {
 
             async move {
                 let initial = consumer.next().await.unwrap().unwrap();
+                initial.ack(true).await.unwrap();
                 info!("Got initial");
                 for i in 0..3 {
                     info!("Sending back reply {i}");
-                    let response = initial
+                    let response_fut = initial
                         .reply_recv(
                             &FramePayload {
                                 message: i.to_string(),
@@ -309,13 +278,17 @@ mod tests {
                             &channel,
                         )
                         .await
-                        .unwrap()
-                        .await;
+                        .unwrap();
+
+                    let response = timeout(Duration::from_secs(5), response_fut).await.unwrap();
                     info!("Got forth reply {i}");
                     assert_eq!(response.get_payload().unwrap(), Ok(()))
                 }
             }
         });
+
+        let channel = RpcChannel::new(&connection).await?;
+        let publisher: Publisher<FrameCommBus> = channel.comm_publisher();
 
         let mut rx = publisher
             .publish_recv_comm(
@@ -332,7 +305,7 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap();
-            info!("Got back reply {i}");
+            info!("Got back reply {i}, sending forth reply {i}");
             back_reply.reply(&Ok(()), &channel).await?;
         }
         handle.await.unwrap();
