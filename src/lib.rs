@@ -59,6 +59,11 @@ where
         delivery_uuid(&self.inner, 1)
     }
 
+    /// Get routing key of this message
+    pub fn routing_key(&self) -> &str {
+        self.inner.routing_key.as_str()
+    }
+
     /// Ack the message
     pub async fn ack(&self, multiple: bool) -> Result<()> {
         self.inner.ack(BasicAckOptions { multiple }).await?;
