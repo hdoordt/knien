@@ -134,7 +134,9 @@ pub mod tests {
         bus = FrameBus,
         publish = FramePayload,
         args = u32,
-        queue = |args| format!("frame_{}", args)
+        queue = |args| format!("frame_{}", args),
+        serialize = serde_json::to_vec,
+        deserialize = serde_json::from_slice
     );
 
     #[tokio::test]
@@ -177,21 +179,21 @@ pub mod tests {
 /// Declare a new [DirectBus].
 #[macro_export]
 macro_rules! direct_bus {
-    ($doc:literal, $bus:ident, $publish_payload:ty, $args:ty, $queue:expr) => {
+    ($doc:literal, $bus:ident, $publish_payload:ty, $args:ty, $queue:expr, $serialize:expr, $deserialize:expr) => {
         $crate::bus!($doc, $bus);
 
-        $crate::bus_impl!($bus, $crate::DirectChannel, $publish_payload);
+        $crate::bus_impl!($bus, $crate::DirectChannel, $publish_payload, $serialize, $deserialize);
 
         $crate::direct_bus_impl!($bus, $args, $queue);
     };
-    (doc = $doc:literal, bus = $bus:ident, publish = $publish_payload:ty, args = $args:ty, queue = $queue:expr) => {
-        $crate::direct_bus!($doc, $bus, $publish_payload, $args, $queue);
+    (doc = $doc:literal, bus = $bus:ident, publish = $publish_payload:ty, args = $args:ty, queue = $queue:expr, serialize = $serialize:expr, deserialize = $deserialize:expr) => {
+        $crate::direct_bus!($doc, $bus, $publish_payload, $args, $queue, $serialize, $deserialize);
     };
-    ($bus:ident, $publish_payload:ty, $args:ty, $queue:expr) => {
-        $crate::direct_bus!("", $bus, $publish_payload, $args, $queue);
+    ($bus:ident, $publish_payload:ty, $args:ty, $queue:expr, $serialize:expr, $deserialize:expr) => {
+        $crate::direct_bus!("", $bus, $publish_payload, $args, $queue, $serialize, $deserialize);
     };
-    (bus = $bus:ident, publish = $publish_payload:ty, args = $args:ty, queue = $queue:expr) => {
-        $crate::direct_bus!($bus, $publish_payload, $args, $queue);
+    (bus = $bus:ident, publish = $publish_payload:ty, args = $args:ty, queue = $queue:expr, serialize = $serialize:expr, deserialize = $deserialize:expr) => {
+        $crate::direct_bus!($bus, $publish_payload, $args, $queue, $serialize, $deserialize);
     };
 }
 

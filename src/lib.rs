@@ -45,7 +45,7 @@ where
 {
     /// Deserialize and return the payload from the [Delivery]
     pub fn get_payload(&'p self) -> Result<B::PublishPayload> {
-        Ok(serde_json::from_slice(&self.inner.data)?)
+        B::deserialize_payload(&self.inner.data)
     }
 
     /// Get the message correlation [Uuid]
@@ -110,3 +110,8 @@ fn fmt_correlation_id(correlation_uuid: Uuid, reply_uuid: Option<Uuid>) -> Strin
         reply_uuid.map(|r| r.to_string()).unwrap_or_default()
     )
 }
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[doc(hidden)]
+pub enum Never {}
+

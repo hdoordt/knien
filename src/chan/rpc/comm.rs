@@ -29,11 +29,34 @@ pub trait RpcCommBus: Unpin {
     type BackPayload;
     /// The type of payload of the messages that the initiator of the communication sends forth
     type ForthPayload;
+
+    /// Serialize [RpcCommBus::InitialPayload] into a [Vec<u8>]
+    fn serialize_initial(payload: &Self::InitialPayload) -> Result<Vec<u8>>;
+    /// Deserialize a byte slice into a [RpcCommBus::InitialPayload]
+    fn deserialize_initial(bytes: &[u8]) -> Result<Self::InitialPayload>;
+
+    /// Serialize [RpcCommBus::BackPayload] into a [Vec<u8>]
+    fn serialize_back(payload: &Self::BackPayload) -> Result<Vec<u8>>;
+    /// Deserialize a byte slice into a [RpcCommBus::BackPayload]
+    fn deserialize_back(bytes: &[u8]) -> Result<Self::BackPayload>;
+
+    /// Serialize [RpcCommBus::ForthPayload] into a [Vec<u8>]
+    fn serialize_forth(payload: &Self::ForthPayload) -> Result<Vec<u8>>;
+    /// Deserialize a byte slice into a [RpcCommBus::ForthPayload]
+    fn deserialize_forth(bytes: &[u8]) -> Result<Self::ForthPayload>;
 }
 
 impl<B: RpcCommBus> Bus for B {
     type Chan = RpcChannel;
     type PublishPayload = B::InitialPayload;
+
+    fn serialize_payload(payload: &Self::PublishPayload) -> Result<Vec<u8>> {
+        B::serialize_initial(payload)
+    }
+
+    fn deserialize_payload(bytes: &[u8]) -> Result<Self::PublishPayload> {
+        B::deserialize_initial(bytes)
+    }
 }
 
 impl<B: RpcCommBus> DirectBus for B {
@@ -44,10 +67,6 @@ impl<B: RpcCommBus> DirectBus for B {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[doc(hidden)]
-pub enum Never {}
-
 #[derive(Debug)]
 /// A reply on an [RpcCommBus].
 pub struct BackReply<B> {
@@ -57,6 +76,14 @@ pub struct BackReply<B> {
 impl<B: RpcCommBus> Bus for BackReply<B> {
     type Chan = RpcChannel;
     type PublishPayload = B::BackPayload;
+
+    fn serialize_payload(payload: &Self::PublishPayload) -> Result<Vec<u8>> {
+        B::serialize_back(payload)
+    }
+
+    fn deserialize_payload(bytes: &[u8]) -> Result<Self::PublishPayload> {
+        B::deserialize_back(bytes)
+    }
 }
 
 impl<B: RpcCommBus> DirectBus for BackReply<B> {
@@ -69,6 +96,14 @@ impl<B: RpcCommBus> DirectBus for BackReply<B> {
 
 impl<B: RpcCommBus> RpcBus for BackReply<B> {
     type ReplyPayload = B::ForthPayload;
+
+    fn serialize_reply(payload: &Self::ReplyPayload) -> Result<Vec<u8>> {
+        B::serialize_forth(payload)
+    }
+
+    fn deserialize_reply(bytes: &[u8]) -> Result<Self::ReplyPayload> {
+        B::deserialize_forth(bytes)
+    }
 }
 
 #[derive(Debug)]
@@ -80,6 +115,14 @@ pub struct ForthReply<B> {
 impl<B: RpcCommBus> Bus for ForthReply<B> {
     type Chan = RpcChannel;
     type PublishPayload = B::ForthPayload;
+
+    fn serialize_payload(payload: &Self::PublishPayload) -> Result<Vec<u8>> {
+        B::serialize_forth(payload)
+    }
+
+    fn deserialize_payload(bytes: &[u8]) -> Result<Self::PublishPayload> {
+        B::deserialize_forth(bytes)
+    }
 }
 
 impl<B: RpcCommBus> DirectBus for ForthReply<B> {
@@ -177,7 +220,7 @@ where
 
         let reply_uuid = correlation_uuid?;
         let correlation_uuid = Uuid::new_v4();
-        let bytes = serde_json::to_vec(back_payload)?;
+        let bytes = B::serialize_back(back_payload)?;
 
         let rx = rpc_chan.register_pending_reply(correlation_uuid);
 
@@ -231,7 +274,7 @@ mod tests {
     rpc_comm_bus!(FrameCommBus, FramePayload, FramePayload, Result<(), FrameSendError>, u32, |args| format!(
         "frame_comm_{}",
         args
-    ));
+    ), serde_json::to_vec, serde_json::from_slice);
 
     #[tokio::test]
     async fn publish_recv_comm() -> crate::Result<()> {
@@ -296,7 +339,7 @@ mod tests {
 #[macro_export]
 /// Declare a new [RpcCommBus].
 macro_rules! rpc_comm_bus {
-    ($doc:literal, $bus:ident, $initial_payload:ty, $back_payload:ty, $forth_payload:ty, $args:ty, $queue:expr) => {
+    ($doc:literal, $bus:ident, $initial_payload:ty, $back_payload:ty, $forth_payload:ty, $args:ty, $queue:expr, $serialize:expr, $deserialize:expr) => {
         #[doc = $doc]
         #[derive(Clone, Copy, Debug)]
         pub enum $bus {}
@@ -307,10 +350,12 @@ macro_rules! rpc_comm_bus {
             $back_payload,
             $forth_payload,
             $args,
-            $queue
+            $queue,
+            $serialize,
+            $deserialize
         );
     };
-    (doc = $doc:literal, bus = $bus:ident, initial = $initial_payload:ty, back = $back_payload:ty, forth = $forth_payload:ty, args = $args:ty, queue = $queue:expr) => {
+    (doc = $doc:literal, bus = $bus:ident, initial = $initial_payload:ty, back = $back_payload:ty, forth = $forth_payload:ty, args = $args:ty, queue = $queue:expr, serialize = $serialize:expr, deserialize = $deserialize:expr) => {
         $crate::rpc_comm_bus!(
             $doc,
             $bus,
@@ -318,10 +363,12 @@ macro_rules! rpc_comm_bus {
             $back_payload,
             $forth_payload,
             $args,
-            $queue
+            $queue,
+            $serialize,
+            $deserialize
         );
     };
-    ($bus:ident, $initial_payload:ty, $back_payload:ty, $forth_payload:ty, $args:ty, $queue:expr) => {
+    ($bus:ident, $initial_payload:ty, $back_payload:ty, $forth_payload:ty, $args:ty, $queue:expr, $serialize:expr, $deserialize:expr) => {
         $crate::rpc_comm_bus!(
             "",
             $bus,
@@ -329,17 +376,21 @@ macro_rules! rpc_comm_bus {
             $back_payload,
             $forth_payload,
             $args,
-            $queue
+            $queue,
+            $serialize,
+            $deserialize
         );
     };
-    (bus = $bus:ident, initial = $initial_payload:ty, back = $back_payload:ty, forth = $forth_payload:ty, args = $args:ty, queue = $queue:expr) => {
+    (bus = $bus:ident, initial = $initial_payload:ty, back = $back_payload:ty, forth = $forth_payload:ty, args = $args:ty, queue = $queue:expr, serialize = $serialize:expr, deserialize = $deserialize:expr) => {
         $crate::rpc_comm_bus!(
             $bus,
             $initial_payload,
             $back_payload,
             $forth_payload,
             $args,
-            $queue
+            $queue,
+            $serialize,
+            $deserialize
         );
     };
 }
@@ -347,7 +398,7 @@ macro_rules! rpc_comm_bus {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! rpc_comm_bus_impl {
-    ($bus:ty, $initial_payload:ty, $back_payload:ty, $forth_payload:ty, $args:ty, $queue:expr) => {
+    ($bus:ty, $initial_payload:ty, $back_payload:ty, $forth_payload:ty, $args:ty, $queue:expr, $serialize:expr, $deserialize:expr) => {
         impl $crate::RpcCommBus for $bus {
             type InitialPayload = $initial_payload;
             type BackPayload = $back_payload;
@@ -357,6 +408,38 @@ macro_rules! rpc_comm_bus_impl {
             fn queue(args: Self::Args) -> String {
                 #[allow(clippy::redundant_closure_call)]
                 ($queue)(args)
+            }
+
+            fn serialize_initial(payload: &Self::InitialPayload) -> $crate::Result<Vec<u8>> {
+                #[allow(clippy::redundant_closure_call)]
+                ($serialize)(payload).map_err(|e| $crate::Error::Serde(Box::new(e)))
+            }
+
+            fn deserialize_initial(bytes: &[u8]) -> $crate::Result<Self::InitialPayload> {
+                #[allow(clippy::redundant_closure_call)]
+                ($deserialize)(bytes).map_err(|e| $crate::Error::Serde(Box::new(e)))
+            }
+
+
+            fn serialize_back(payload: &Self::BackPayload) -> $crate::Result<Vec<u8>> {
+                #[allow(clippy::redundant_closure_call)]
+                ($serialize)(payload).map_err(|e| $crate::Error::Serde(Box::new(e)))
+            }
+
+            fn deserialize_back(bytes: &[u8]) -> $crate::Result<Self::BackPayload> {
+                #[allow(clippy::redundant_closure_call)]
+                ($deserialize)(bytes).map_err(|e| $crate::Error::Serde(Box::new(e)))
+            }
+
+
+            fn serialize_forth(payload: &Self::ForthPayload) -> $crate::Result<Vec<u8>> {
+                #[allow(clippy::redundant_closure_call)]
+                ($serialize)(payload).map_err(|e| $crate::Error::Serde(Box::new(e)))
+            }
+
+            fn deserialize_forth(bytes: &[u8]) -> $crate::Result<Self::ForthPayload> {
+                #[allow(clippy::redundant_closure_call)]
+                ($deserialize)(bytes).map_err(|e| $crate::Error::Serde(Box::new(e)))
             }
         }
     };
