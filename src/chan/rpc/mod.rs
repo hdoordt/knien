@@ -24,6 +24,10 @@ pub use comm::*;
 pub trait RpcBus: DirectBus {
     /// The type of payload of the replies of messages published on this bus.
     type ReplyPayload;
+    /// Serialize [RpcBus::ReplyPayload] into a [Vec<u8>]
+    fn serialize_reply(payload: &Self::ReplyPayload) -> Result<Vec<u8>>;
+    /// Deserialize a byte slice into a [RpcBus::ReplyPayload]
+    fn deserialize_reply(bytes: &[u8]) -> Result<Self::ReplyPayload>;
 }
 
 #[derive(Clone)]
@@ -44,6 +48,14 @@ pub struct Reply<B> {
 impl<B: RpcBus> Bus for Reply<B> {
     type Chan = RpcChannel;
     type PublishPayload = B::ReplyPayload;
+
+    fn serialize_payload(payload: &Self::PublishPayload) -> Result<Vec<u8>> {
+        B::serialize_reply(payload)
+    }
+
+    fn deserialize_payload(bytes: &[u8]) -> Result<Self::PublishPayload> {
+        B::deserialize_reply(bytes)
+    }
 }
 
 impl<B: RpcBus> DirectBus for Reply<B> {
@@ -56,6 +68,14 @@ impl<B: RpcBus> DirectBus for Reply<B> {
 
 impl<B: RpcBus> RpcBus for Reply<B> {
     type ReplyPayload = B::PublishPayload;
+
+    fn serialize_reply(payload: &Self::ReplyPayload) -> Result<Vec<u8>> {
+        B::serialize_payload(payload)
+    }
+
+    fn deserialize_reply(bytes: &[u8]) -> Result<Self::ReplyPayload> {
+        B::deserialize_payload(bytes)
+    }
 }
 
 impl RpcChannel {
@@ -271,7 +291,7 @@ where
 
         let reply_uuid = correlation_uuid?;
 
-        let bytes = serde_json::to_vec(reply_payload)?;
+        let bytes = B::serialize_reply(reply_payload)?;
 
         debug!("Replying to message with correlation UUID {reply_uuid}");
         let correlation_uuid = Uuid::new_v4();
@@ -367,9 +387,12 @@ mod tests {
     }
 
     rpc_bus!(FrameBus, FramePayload, Result<(), FrameSendError>, u32, |args| format!(
-        "frame_{}",
-        args
-    ));
+            "frame_{}",
+            args,
+        ), 
+        serde_json::to_vec,
+        serde_json::from_slice
+    );
 
     #[tokio::test]
     async fn publish_recv_many() -> crate::Result<()> {
@@ -456,32 +479,79 @@ mod tests {
 #[macro_export]
 /// Declare a new [RpcBus].
 macro_rules! rpc_bus {
-    ($doc:literal, $bus:ident, $publish_payload:ty, $reply_payload:ty, $args:ty, $queue:expr) => {
+    ($doc:literal, $bus:ident, $publish_payload:ty, $reply_payload:ty, $args:ty, $queue:expr, $serialize:expr, $deserialize:expr) => {
         $crate::bus!($doc, $bus);
 
-        $crate::bus_impl!($bus, $crate::RpcChannel, $publish_payload);
+        $crate::bus_impl!(
+            $bus,
+            $crate::RpcChannel,
+            $publish_payload,
+            $serialize,
+            $deserialize
+        );
 
         $crate::direct_bus_impl!($bus, $args, $queue);
 
-        $crate::rpc_bus_impl!($bus, $reply_payload);
+        $crate::rpc_bus_impl!(
+            $bus,
+            $reply_payload,
+            $serialize,
+            $deserialize
+        );
     };
-    (doc = $doc:literal, bus = $bus:ident, publish = $publish_payload:ty, reply = $reply_payload:ty, args = $args:ty, queue = $queue:expr) => {
-        $crate::rpc_bus!($doc, $bus, $publish_payload, $reply_payload, $args, $queue);
+    (doc = $doc:literal, bus = $bus:ident, publish = $publish_payload:ty, reply = $reply_payload:ty, args = $args:ty, queue = $queue:expr, serialize = $serialize:expr, deserialize = $deserialize:expr) => {
+        $crate::rpc_bus!(
+            $doc,
+            $bus,
+            $publish_payload,
+            $reply_payload,
+            $args,
+            $queue,
+            $serialize,
+            $deserialize
+        );
     };
-    ($bus:ident, $publish_payload:ty, $reply_payload:ty, $args:ty, $queue:expr) => {
-        $crate::rpc_bus!("", $bus, $publish_payload, $reply_payload, $args, $queue);
+    ($bus:ident, $publish_payload:ty, $reply_payload:ty, $args:ty, $queue:expr, $serialize:expr, $deserialize:expr) => {
+        $crate::rpc_bus!(
+            "",
+            $bus,
+            $publish_payload,
+            $reply_payload,
+            $args,
+            $queue,
+            $serialize,
+            $deserialize
+        );
     };
-    (bus = $bus:ident, publish = $publish_payload:ty, reply = $reply_payload:ty, args = $args:ty, queue = $queue:expr) => {
-        $crate::rpc_bus!($bus, $publish_payload, $reply_payload, $args, $queue);
+    (bus = $bus:ident, publish = $publish_payload:ty, reply = $reply_payload:ty, args = $args:ty, queue = $queue:expr, serialize = $serialize:expr, deserialize = $deserialize:expr) => {
+        $crate::rpc_bus!(
+            $bus,
+            $publish_payload,
+            $reply_payload,
+            $args,
+            $queue,
+            $serialize,
+            $deserialize
+        );
     };
 }
 
 #[doc(hidden)]
 #[macro_export]
 macro_rules! rpc_bus_impl {
-    ($bus:ident, $reply_payload:ty) => {
+    ($bus:ident, $reply_payload:ty, $serialize:expr, $deserialize:expr) => {
         impl $crate::RpcBus for $bus {
             type ReplyPayload = $reply_payload;
+
+            fn serialize_reply(payload: &Self::ReplyPayload) -> $crate::Result<Vec<u8>> {
+                #[allow(clippy::redundant_closure_call)]
+                ($serialize)(payload).map_err(|e| $crate::Error::Serde(Box::new(e)))
+            }
+
+            fn deserialize_reply(bytes: &[u8]) -> $crate::Result<Self::ReplyPayload> {
+                #[allow(clippy::redundant_closure_call)]
+                ($deserialize)(bytes).map_err(|e| $crate::Error::Serde(Box::new(e)))
+            }
         }
     };
 }

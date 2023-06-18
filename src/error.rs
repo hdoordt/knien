@@ -1,4 +1,4 @@
-use std::fmt::Display;
+use std::{fmt::Display, error::Error as StdError};
 
 #[cfg(feature = "topic")]
 use crate::RoutingKeyError;
@@ -9,7 +9,7 @@ pub enum Error {
     /// A low-level error concerning RabbitMq
     Mq(lapin::Error),
     /// A (de)serialization error
-    Serde(serde_json::Error),
+    Serde(Box<dyn StdError + Send + Sync>),
     /// Error validating a [uuid::Uuid]
     Uuid(uuid::Error),
     #[cfg(feature = "rpc")]
@@ -23,12 +23,6 @@ pub enum Error {
 impl From<lapin::Error> for Error {
     fn from(e: lapin::Error) -> Self {
         Self::Mq(e)
-    }
-}
-
-impl From<serde_json::Error> for Error {
-    fn from(e: serde_json::Error) -> Self {
-        Self::Serde(e)
     }
 }
 

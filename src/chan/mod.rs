@@ -33,6 +33,10 @@ pub trait Bus: Unpin {
     type Chan: Channel;
     /// The type of payload of the messages that are published on or consumed from it.
     type PublishPayload;
+    /// Serialize [Bus::PublishPayload] into a [Vec<u8>]
+    fn serialize_payload(payload: &Self::PublishPayload) -> Result<Vec<u8>>;
+    /// Deserialize a byte slice into a [Bus::PublishPayload]
+    fn deserialize_payload(bytes: &[u8]) -> Result<Self::PublishPayload>;
 }
 
 #[async_trait]
@@ -85,22 +89,21 @@ pub struct Publisher<B: Bus> {
     chan: B::Chan,
 }
 
-impl<B> Publisher<B>
+impl<'p, B, P> Publisher<B>
 where
-    B: Bus,
+    B: Bus<PublishPayload = P>,
+
+    P: Deserialize<'p> + Serialize,
 {
-    async fn publish_with_properties<'p, P>(
+    async fn publish_with_properties(
         &self,
         routing_key: &str,
         payload: &P,
         properties: BasicProperties,
         correlation_uuid: Uuid,
         reply_uuid: Option<Uuid>,
-    ) -> Result<()>
-    where
-        P: Deserialize<'p> + Serialize,
-    {
-        let bytes = serde_json::to_vec(payload)?;
+    ) -> Result<()> {
+        let bytes = B::serialize_payload(payload)?;
         self.chan
             .publish_with_properties(
                 &bytes,
@@ -152,7 +155,13 @@ mod tests {
     }
 
     bus!("A frame bus", FrameBus);
-    bus_impl!(FrameBus, Never, FramePayload);
+    bus_impl!(
+        FrameBus,
+        Never,
+        FramePayload,
+        serde_json::to_vec,
+        serde_json::from_slice
+    );
 
     pub fn setup_test_logging() -> DefaultGuard {
         subscriber::set_default(
@@ -180,10 +189,20 @@ macro_rules! bus {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! bus_impl {
-    ($bus:ident, $chan:ty, $publish_payload:ty) => {
+    ($bus:ident, $chan:ty, $publish_payload:ty, $serialize:expr, $deserialize:expr) => {
         impl $crate::Bus for $bus {
             type Chan = $chan;
             type PublishPayload = $publish_payload;
+
+            fn serialize_payload(payload: &Self::PublishPayload) -> $crate::Result<Vec<u8>> {
+                #[allow(clippy::redundant_closure_call)]
+                ($serialize)(payload).map_err(|e| $crate::Error::Serde(Box::new(e)))
+            }
+
+            fn deserialize_payload(bytes: &[u8]) -> $crate::Result<Self::PublishPayload> {
+                #[allow(clippy::redundant_closure_call)]
+                ($deserialize)(bytes).map_err(|e| $crate::Error::Serde(Box::new(e)))
+            }
         }
     };
 }

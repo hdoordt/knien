@@ -303,7 +303,14 @@ mod tests {
 
     topic_exchange!(MyExchange, "the_exchange");
 
-    topic_bus!(MyTopic, FramePayload, MyExchange, "frame.*.*");
+    topic_bus!(
+        MyTopic,
+        FramePayload,
+        MyExchange,
+        "frame.*.*",
+        serde_json::to_vec,
+        serde_json::from_slice
+    );
 
     #[tokio::test]
     async fn publish() -> crate::Result<()> {
@@ -428,21 +435,50 @@ macro_rules! topic_exchange {
 #[macro_export]
 /// Declare a new [TopicBus].
 macro_rules! topic_bus {
-    ($doc:literal, $bus:ident, $publish_payload:ty, $exchange:ty, $topic:literal) => {
+    ($doc:literal, $bus:ident, $publish_payload:ty, $exchange:ty, $topic:literal, $serialize:expr, $deserialize:expr) => {
         $crate::bus!($doc, $bus);
 
-        $crate::bus_impl!($bus, $crate::TopicChannel<$exchange>, $publish_payload);
+        $crate::bus_impl!(
+            $bus,
+            $crate::TopicChannel<$exchange>,
+            $publish_payload,
+            $serialize,
+            $deserialize
+        );
 
         $crate::topic_bus_impl!($bus, $exchange, $topic);
     };
-    (doc = $doc:literal, bus = $bus:ident, publish = $publish_payload:ty, exchange = $exchange:ty, topic = $topic:literal) => {
-        $crate::topic_bus!($doc, $bus, $publish_payload, $exchange, $topic);
+    (doc = $doc:literal, bus = $bus:ident, publish = $publish_payload:ty, exchange = $exchange:ty, topic = $topic:literal, serialize = $serialize:expr, deserialize = $deserialize:expr) => {
+        $crate::topic_bus!(
+            $doc,
+            $bus,
+            $publish_payload,
+            $exchange,
+            $topic,
+            $serialize,
+            $deserialize
+        );
     };
-    ($bus:ident, $publish_payload:ty, $exchange:ty, $topic:literal) => {
-        $crate::topic_bus!("", $bus, $publish_payload, $exchange, $topic);
+    ($bus:ident, $publish_payload:ty, $exchange:ty, $topic:literal, $serialize:expr, $deserialize:expr) => {
+        $crate::topic_bus!(
+            "",
+            $bus,
+            $publish_payload,
+            $exchange,
+            $topic,
+            $serialize,
+            $deserialize
+        );
     };
-    (bus = $bus:ident, publish = $publish_payload:ty, exchange = $exchange:ty, topic = $topic:literal) => {
-        $crate::topic_bus!($bus, $publish_payload, $exchange, $topic);
+    (bus = $bus:ident, publish = $publish_payload:ty, exchange = $exchange:ty, topic = $topic:literal , serialize = $serialize:expr, deserialize = $deserialize:expr) => {
+        $crate::topic_bus!(
+            $bus,
+            $publish_payload,
+            $exchange,
+            $topic,
+            $serialize,
+            $deserialize
+        );
     };
 }
 
