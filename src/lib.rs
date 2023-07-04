@@ -73,6 +73,11 @@ where
         Ok(())
     }
 
+    /// Get whether this message was redelivered or not
+    pub fn redelivered(&self) -> bool {
+        self.inner.redelivered
+    }
+
     /// Nack the message
     pub async fn nack(&self, multiple: bool, requeue: bool) -> Result<()> {
         self.inner
